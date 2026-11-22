@@ -1,0 +1,8 @@
+{
+  "name": "Perangkat Ajar \u0026 Administrasi Guru MA Banu Hasyim",
+  "description": "Aplikasi Perangkat Pembelajaran Kurikulum Merdeka Berbasis Cinta dan Administrasi Guru Madrasah Aliyah (Data Siswa, Absensi, Jurnal Mengajar, Daftar Nilai Harian, dan Kuis Interaktif AI).",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
