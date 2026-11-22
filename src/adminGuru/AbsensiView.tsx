@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { CalendarCheck, CheckCheck, Printer, RotateCcw } from 'lucide-react';
 import {
   computeAttendanceSummary,
@@ -7,6 +7,8 @@ import {
   getAppApi,
   getDayCalendarStatus,
   getLegacyState,
+  getPreferredKelasId,
+  subscribeMasterStudents,
   updateAdminGuruState,
 } from './bridge';
 import type { AttendanceStatus, TingkatKelas } from '../types/adminGuru';
@@ -26,10 +28,14 @@ const STATUS_META: Array<{ code: AttendanceStatus; label: string; activeClass: s
 export const AbsensiView: React.FC = () => {
   const [adminState, setAdminState] = useState(() => getAdminGuruState());
   const [filterTingkat, setFilterTingkat] = useState<'all' | TingkatKelas>('all');
-  const [selectedKelasId, setSelectedKelasId] = useState<string>(
-    adminState.classes[0]?.id || 'kls_10_a'
+  const [selectedKelasId, setSelectedKelasId] = useState<string>(() =>
+    getPreferredKelasId(adminState.classes)
   );
   const [selectedDate, setSelectedDate] = useState<string>(todayIso());
+
+  useEffect(() => {
+    return subscribeMasterStudents(() => setAdminState(getAdminGuruState()));
+  }, []);
 
   const api = getAppApi();
   const legacy = getLegacyState();

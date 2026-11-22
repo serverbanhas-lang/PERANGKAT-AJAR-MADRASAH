@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   CalendarRange,
   Plus,
@@ -18,6 +18,8 @@ import {
   getDayCalendarStatus,
   getIndonesianDayName,
   getLegacyState,
+  getPreferredKelasId,
+  subscribeMasterStudents,
   updateAdminGuruState,
 } from './bridge';
 import type { JournalItem, TingkatKelas } from '../types/adminGuru';
@@ -27,10 +29,14 @@ export const JurnalView: React.FC = () => {
   const legacy = getLegacyState();
   const api = getAppApi();
 
+  useEffect(() => {
+    return subscribeMasterStudents(() => setAdminState(getAdminGuruState()));
+  }, []);
+
   const mapelList = useMemo(() => getActiveMapelList(legacy), [legacy]);
   const [filterTingkat, setFilterTingkat] = useState<'all' | TingkatKelas>('all');
-  const [selectedKelasId, setSelectedKelasId] = useState<string>(
-    adminState.classes[0]?.id || 'kls_10_a'
+  const [selectedKelasId, setSelectedKelasId] = useState<string>(() =>
+    getPreferredKelasId(adminState.classes)
   );
   const [semester, setSemester] = useState<1 | 2>(1);
   const [selectedMapel, setSelectedMapel] = useState<string>(mapelList[0] || 'Mata Pelajaran Utama');

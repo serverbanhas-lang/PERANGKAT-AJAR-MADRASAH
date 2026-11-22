@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   AlertCircle,
   BookOpenCheck,
@@ -30,7 +30,9 @@ import {
   getBahanAjarSources,
   getDynamicTPs,
   getLegacyState,
+  getPreferredKelasId,
   parseImportedQuizJson,
+  subscribeMasterStudents,
   updateAdminGuruState,
 } from './bridge';
 import { StudentQuizView } from './StudentQuizView';
@@ -88,9 +90,12 @@ export const KuisInteraktifView: React.FC = () => {
   const [judulKuis, setJudulKuis] = useState<string>(
     bahanSources[0] ? `Kuis: ${bahanSources[0].judul}` : 'Kuis Pemahaman Materi'
   );
-  const [selectedKelasId, setSelectedKelasId] = useState<string>(
-    adminState.classes[0]?.id || 'kls_10_a'
+  const [selectedKelasId, setSelectedKelasId] = useState<string>(() =>
+    getPreferredKelasId(adminState.classes)
   );
+  useEffect(() => {
+    return subscribeMasterStudents(() => setAdminState(getAdminGuruState()));
+  }, []);
   const [selectedMapel, setSelectedMapel] = useState<string>(
     mapelList[0] || 'Mata Pelajaran Utama'
   );

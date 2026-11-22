@@ -11,6 +11,7 @@ const __dirname = path.dirname(__filename);
 const PORT = Number(process.env.PORT || 3000);
 const DATA_DIR = path.join(__dirname, '.data');
 const QUIZZES_FILE = path.join(DATA_DIR, 'quizzes.json');
+const MASTER_STUDENTS_FILE = path.join(DATA_DIR, 'master-students.json');
 
 interface QuizQuestionRecord {
   id: string;
@@ -79,6 +80,74 @@ function saveQuizzesStore(store: Record<string, PublishedQuizRecord>): void {
     fs.mkdirSync(DATA_DIR, { recursive: true });
   }
   fs.writeFileSync(QUIZZES_FILE, JSON.stringify(store, null, 2), 'utf8');
+}
+
+interface MasterClassRecord {
+  id: string;
+  tingkat: '10' | '11' | '12';
+  nama: string;
+  jurusan: string;
+  waliKelas?: string;
+}
+
+interface MasterStudentRecord {
+  id: string;
+  nisn: string;
+  nama: string;
+  jk: 'L' | 'P';
+  kelasId: string;
+  status: 'aktif' | 'nonaktif';
+}
+
+interface MasterStudentsStore {
+  classes: MasterClassRecord[];
+  students: MasterStudentRecord[];
+  deletedStudentIds: string[];
+  adminLockedForTeachers: boolean;
+  updatedAt: string | null;
+}
+
+function readMasterStudentsStore(): MasterStudentsStore {
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  }
+  if (!fs.existsSync(MASTER_STUDENTS_FILE)) {
+    return {
+      classes: [],
+      students: [],
+      deletedStudentIds: [],
+      adminLockedForTeachers: false,
+      updatedAt: null,
+    };
+  }
+  try {
+    const raw = fs.readFileSync(MASTER_STUDENTS_FILE, 'utf8');
+    const parsed = JSON.parse(raw);
+    return {
+      classes: Array.isArray(parsed?.classes) ? parsed.classes : [],
+      students: Array.isArray(parsed?.students) ? parsed.students : [],
+      deletedStudentIds: Array.isArray(parsed?.deletedStudentIds)
+        ? parsed.deletedStudentIds.map(String)
+        : [],
+      adminLockedForTeachers: Boolean(parsed?.adminLockedForTeachers),
+      updatedAt: parsed?.updatedAt ? String(parsed.updatedAt) : null,
+    };
+  } catch {
+    return {
+      classes: [],
+      students: [],
+      deletedStudentIds: [],
+      adminLockedForTeachers: false,
+      updatedAt: null,
+    };
+  }
+}
+
+function saveMasterStudentsStore(store: MasterStudentsStore): void {
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  }
+  fs.writeFileSync(MASTER_STUDENTS_FILE, JSON.stringify(store, null, 2), 'utf8');
 }
 
 function getGenAI(): GoogleGenAI {
@@ -800,6 +869,72 @@ INSTRUKSI PENYUSUNAN SLIDE POWERPOINT:
     }
     res.json({ deleted: true });
   });
+
+  // Master Data Kelas & Siswa Terpusat Sekolah (dipakai bersama oleh semua mapel & guru)
+  app.get('/api/master-students', (_req, res) => {
+    try {
+      const store = readMasterStudentsStore();
+      res.json(store);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Gagal membaca master data siswa.';
+      res.status(500).json({ error: message });
+    }
+  });
+
+  const handleSaveMasterStudents = (req: express.Request, res: express.Response) => {
+    try {
+      const body = req.body || {};
+      const rawClasses = Array.isArray(body.classes) ? body.classes : [];
+      const rawStudents = Array.isArray(body.students) ? body.students : [];
+      const rawDeleted = Array.isArray(body.deletedStudentIds) ? body.deletedStudentIds : [];
+
+      const classes: MasterClassRecord[] = rawClasses
+        .filter((c: unknown): c is Record<string, unknown> => Boolean(c && typeof c === 'object'))
+        .map((c: Record<string, unknown>, idx: number) => {
+          const t = String(c.tingkat || '10');
+          return {
+            id: String(c.id || `kls_${idx}`).slice(0, 80),
+            tingkat: (t === '11' || t === '12' ? t : '10') as '10' | '11' | '12',
+            nama: String(c.nama || `Kelas ${idx + 1}`).trim().slice(0, 80),
+            jurusan: String(c.jurusan || 'Umum').trim().slice(0, 60),
+            waliKelas: c.waliKelas ? String(c.waliKelas).trim().slice(0, 100) : '',
+          };
+        });
+
+      const students: MasterStudentRecord[] = rawStudents
+        .filter((s: unknown): s is Record<string, unknown> => Boolean(s && typeof s === 'object'))
+        .map((s: Record<string, unknown>, idx: number) => ({
+          id: String(s.id || `std_${idx}`).slice(0, 80),
+          nisn: String(s.nisn || '').trim().slice(0, 40),
+          nama: String(s.nama || '').trim().slice(0, 140),
+          jk: (s.jk === 'P' ? 'P' : 'L') as 'L' | 'P',
+          kelasId: String(s.kelasId || classes[0]?.id || 'kls_10_a').slice(0, 80),
+          status: (s.status === 'nonaktif' ? 'nonaktif' : 'aktif') as 'aktif' | 'nonaktif',
+        }))
+        .filter((s: MasterStudentRecord) => s.nama.length > 0);
+
+      const deletedStudentIds: string[] = Array.from(
+        new Set<string>(rawDeleted.map((id: unknown) => String(id || '').trim()).filter(Boolean))
+      ).slice(-1000);
+
+      const store: MasterStudentsStore = {
+        classes,
+        students,
+        deletedStudentIds,
+        adminLockedForTeachers: Boolean(body.adminLockedForTeachers),
+        updatedAt: new Date().toISOString(),
+      };
+
+      saveMasterStudentsStore(store);
+      res.json(store);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Gagal menyimpan master data siswa.';
+      res.status(500).json({ error: message });
+    }
+  };
+
+  app.post('/api/master-students', handleSaveMasterStudents);
+  app.put('/api/master-students', handleSaveMasterStudents);
 
   if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');

@@ -40,8 +40,10 @@ import {
   getAppApi,
   getBahanAjarSources,
   getLegacyState,
+  getPreferredKelasId,
   normalizeMediaPayload,
   parseImportedMediaJson,
+  subscribeMasterStudents,
   updateAdminGuruState,
 } from './bridge';
 import { buildStandaloneHtml5PowerPoint } from './mediaHtmlExport';
@@ -228,9 +230,12 @@ export const MediaPembelajaranView: React.FC = () => {
     bahanSources[0] ? `Media Ajar: ${bahanSources[0].judul}` : 'Media Pembelajaran Interaktif'
   );
   const [jenisMedia, setJenisMedia] = useState<MediaPembelajaranJenis>('slide-presentasi');
-  const [selectedKelasId, setSelectedKelasId] = useState<string>(
-    adminState.classes[0]?.id || 'kls_10_a'
+  const [selectedKelasId, setSelectedKelasId] = useState<string>(() =>
+    getPreferredKelasId(adminState.classes)
   );
+  useEffect(() => {
+    return subscribeMasterStudents(() => setAdminState(getAdminGuruState()));
+  }, []);
   const [selectedMapel, setSelectedMapel] = useState<string>(
     mapelList[0] || 'Mata Pelajaran Utama'
   );

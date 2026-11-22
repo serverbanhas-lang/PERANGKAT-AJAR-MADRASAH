@@ -102,6 +102,441 @@ export function normalizeAdminGuruState(raw: unknown): AdminGuruState {
   };
 }
 
+export const MASTER_STUDENTS_STORAGE_KEY = 'ma-banu-hasyim-master-students-v1';
+
+export interface MasterStudentsStorePayload {
+  classes: KelasItem[];
+  students: StudentItem[];
+  deletedStudentIds: string[];
+  adminLockedForTeachers: boolean;
+  updatedAt: string | null;
+  rescuedFromWorkspaces?: boolean;
+}
+
+export function normalizeClassMatchKey(raw: string): string {
+  const s = String(raw || '')
+    .toLowerCase()
+    .split('/')[0]
+    .replace(/\bkelas\b|\brombel\b/g, '')
+    .replace(/\b10\b/g, 'x')
+    .replace(/\b11\b/g, 'xi')
+    .replace(/\b12\b/g, 'xii')
+    .replace(/[^a-z0-9]/g, '');
+  return s;
+}
+
+export function findMatchingClassId(
+  classes: KelasItem[],
+  rawName: string,
+  fallbackId?: string
+): string | undefined {
+  const clean = String(rawName || '').trim().toLowerCase();
+  if (!clean || classes.length === 0) return fallbackId;
+
+  const exact = classes.find((c) => c.nama.trim().toLowerCase() === clean);
+  if (exact) return exact.id;
+
+  const targetKey = normalizeClassMatchKey(rawName);
+  if (!targetKey) return fallbackId;
+
+  const keyExact = classes.find((c) => normalizeClassMatchKey(c.nama) === targetKey);
+  if (keyExact) return keyExact.id;
+
+  // Cocokkan mis. "11 IPS" / "XI IPS" ke "XI-IPS-1" atau sebaliknya
+  const prefixMatch = classes.find((c) => {
+    const ck = normalizeClassMatchKey(c.nama);
+    const ckNoNum = ck.replace(/\d+$/, '');
+    const tkNoNum = targetKey.replace(/\d+$/, '');
+    return ckNoNum && tkNoNum && ckNoNum === tkNoNum;
+  });
+  if (prefixMatch) return prefixMatch.id;
+
+  return fallbackId;
+}
+
+export function getPreferredKelasId(classes: KelasItem[], fallback = 'kls_10_a'): string {
+  if (!classes.length) return fallback;
+  const legacy = getLegacyState();
+  const wsKelas = legacy?.ws?.kelas || legacy?.identitas?.kelas || '';
+  if (wsKelas) {
+    const matched = findMatchingClassId(classes, wsKelas);
+    if (matched) return matched;
+  }
+  return classes[0]?.id || fallback;
+}
+
+function sanitizeClassesList(raw: unknown): KelasItem[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((c): c is Record<string, unknown> => Boolean(c && typeof c === 'object'))
+    .map((c, idx) => ({
+      id: String(c.id || `kls_${idx}_${Date.now()}`),
+      tingkat: (['10', '11', '12'].includes(String(c.tingkat))
+        ? String(c.tingkat)
+        : '10') as TingkatKelas,
+      nama: String(c.nama || `Kelas ${idx + 1}`).trim(),
+      jurusan: String(c.jurusan || 'Umum').trim(),
+      waliKelas: c.waliKelas ? String(c.waliKelas).trim() : '',
+    }))
+    .filter((c) => c.nama.length > 0);
+}
+
+function sanitizeStudentsList(raw: unknown, fallbackKelasId: string): StudentItem[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((s): s is Record<string, unknown> => Boolean(s && typeof s === 'object'))
+    .map((s, idx) => ({
+      id: String(s.id || `std_${idx}_${Date.now()}`),
+      nisn: String(s.nisn || '').trim(),
+      nama: String(s.nama || '').trim(),
+      jk: (s.jk === 'P' ? 'P' : 'L') as StudentItem['jk'],
+      kelasId: String(s.kelasId || fallbackKelasId),
+      status: (s.status === 'nonaktif' ? 'nonaktif' : 'aktif') as StudentItem['status'],
+    }))
+    .filter((s) => s.nama.length > 0);
+}
+
+function mergeMasterPools(
+  baseClasses: KelasItem[],
+  baseStudents: StudentItem[],
+  incomingClasses: KelasItem[],
+  incomingStudents: StudentItem[],
+  deletedIds: Set<string>
+): { classes: KelasItem[]; students: StudentItem[] } {
+  const classes: KelasItem[] = baseClasses.length
+    ? baseClasses.map((c) => ({ ...c }))
+    : DEFAULT_CLASSES.map((c) => ({ ...c }));
+  const classIdMap = new Map<string, string>();
+
+  for (const ic of incomingClasses) {
+    const byId = classes.find((c) => c.id === ic.id);
+    if (byId) {
+      if (!byId.waliKelas && ic.waliKelas) byId.waliKelas = ic.waliKelas;
+      classIdMap.set(ic.id, byId.id);
+      continue;
+    }
+    const normIn = `${ic.tingkat}::${ic.nama.trim().toLowerCase()}`;
+    const byName = classes.find(
+      (c) => `${c.tingkat}::${c.nama.trim().toLowerCase()}` === normIn
+    );
+    if (byName) {
+      classIdMap.set(ic.id, byName.id);
+      continue;
+    }
+    classes.push({ ...ic });
+    classIdMap.set(ic.id, ic.id);
+  }
+
+  const validClassIds = new Set(classes.map((c) => c.id));
+  const fallbackClassId = classes[0]?.id || 'kls_10_a';
+  const students: StudentItem[] = [];
+  const seenIds = new Set<string>();
+  const seenSignatures = new Set<string>();
+
+  const pushStudent = (rawSt: StudentItem) => {
+    if (!rawSt.nama || deletedIds.has(rawSt.id)) return;
+    const remappedKelasId = classIdMap.get(rawSt.kelasId) || rawSt.kelasId;
+    const finalKelasId = validClassIds.has(remappedKelasId) ? remappedKelasId : fallbackClassId;
+    const sig = rawSt.nisn
+      ? `nisn:${rawSt.nisn.toLowerCase()}::${rawSt.nama.toLowerCase()}`
+      : `name:${rawSt.nama.toLowerCase()}::${finalKelasId}`;
+    if (seenIds.has(rawSt.id) || seenSignatures.has(sig)) return;
+    seenIds.add(rawSt.id);
+    seenSignatures.add(sig);
+    students.push({
+      ...rawSt,
+      kelasId: finalKelasId,
+    });
+  };
+
+  baseStudents.forEach(pushStudent);
+  incomingStudents.forEach(pushStudent);
+
+  return { classes, students };
+}
+
+function collectLocalStorageWorkspaceAdmins(): Array<{ classes: KelasItem[]; students: StudentItem[] }> {
+  const collected: Array<{ classes: KelasItem[]; students: StudentItem[] }> = [];
+  if (typeof window === 'undefined' || !window.localStorage) return collected;
+
+  const currentLegacy = getLegacyState();
+  if (currentLegacy?.adminGuru) {
+    const cls = sanitizeClassesList(currentLegacy.adminGuru.classes);
+    const stds = sanitizeStudentsList(
+      currentLegacy.adminGuru.students,
+      cls[0]?.id || DEFAULT_CLASSES[0].id
+    );
+    if (cls.length || stds.length) {
+      collected.push({ classes: cls, students: stds });
+    }
+  }
+
+  try {
+    const prefixes = [
+      'ma-perangkat-ajar-v1',
+      'amin-manajemen-sekolah-v1',
+      'amin-manajemen-sekolah-kosong-v1',
+    ];
+    for (let i = 0; i < window.localStorage.length; i++) {
+      const k = window.localStorage.key(i);
+      if (!k) continue;
+      const matchesPrefix = prefixes.some((p) => k === p || k.startsWith(`${p}:ws:`));
+      if (!matchesPrefix) continue;
+      const raw = window.localStorage.getItem(k);
+      if (!raw) continue;
+      try {
+        const parsed = JSON.parse(raw);
+        const ag = parsed?.adminGuru;
+        if (ag && typeof ag === 'object') {
+          const cls = sanitizeClassesList(ag.classes);
+          const stds = sanitizeStudentsList(
+            ag.students,
+            cls[0]?.id || DEFAULT_CLASSES[0].id
+          );
+          if (cls.length || stds.length) {
+            collected.push({ classes: cls, students: stds });
+          }
+        }
+      } catch {
+        // skip invalid entry
+      }
+    }
+  } catch {
+    // ignore storage access issues
+  }
+
+  return collected;
+}
+
+export function readGlobalMasterStore(): MasterStudentsStorePayload {
+  const defClasses = DEFAULT_CLASSES.map((c) => ({ ...c }));
+  let stored: MasterStudentsStorePayload | null = null;
+
+  if (typeof window !== 'undefined' && window.localStorage) {
+    try {
+      const raw = window.localStorage.getItem(MASTER_STUDENTS_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') {
+          const cls = sanitizeClassesList(parsed.classes);
+          const effectiveCls = cls.length ? cls : defClasses;
+          stored = {
+            classes: effectiveCls,
+            students: sanitizeStudentsList(parsed.students, effectiveCls[0].id),
+            deletedStudentIds: Array.isArray(parsed.deletedStudentIds)
+              ? parsed.deletedStudentIds.map(String)
+              : [],
+            adminLockedForTeachers: Boolean(parsed.adminLockedForTeachers),
+            updatedAt: parsed.updatedAt ? String(parsed.updatedAt) : null,
+            rescuedFromWorkspaces: Boolean(parsed.rescuedFromWorkspaces),
+          };
+        }
+      }
+    } catch {
+      stored = null;
+    }
+  }
+
+  let classes = stored ? stored.classes : defClasses;
+  let students = stored ? stored.students : [];
+  const deletedIds = new Set<string>(stored?.deletedStudentIds || []);
+
+  // Jika belum pernah rescue lintas ruang kerja (mapel lain), atau ada siswa di ruang kerja aktif yang belum masuk master
+  if (!stored || !stored.rescuedFromWorkspaces) {
+    const allWorkspaces = collectLocalStorageWorkspaceAdmins();
+    for (const ws of allWorkspaces) {
+      const merged = mergeMasterPools(classes, students, ws.classes, ws.students, deletedIds);
+      classes = merged.classes;
+      students = merged.students;
+    }
+    const rescuedPayload: MasterStudentsStorePayload = {
+      classes,
+      students,
+      deletedStudentIds: Array.from(deletedIds),
+      adminLockedForTeachers: stored?.adminLockedForTeachers || false,
+      updatedAt: stored?.updatedAt || (students.length > 0 ? new Date().toISOString() : null),
+      rescuedFromWorkspaces: true,
+    };
+    if (typeof window !== 'undefined' && window.localStorage) {
+      try {
+        window.localStorage.setItem(MASTER_STUDENTS_STORAGE_KEY, JSON.stringify(rescuedPayload));
+      } catch {
+        // ignore quota errors
+      }
+    }
+    return rescuedPayload;
+  }
+
+  return stored;
+}
+
+let serverSyncTimer: number | null = null;
+
+export function writeGlobalMasterStore(
+  payload: Partial<MasterStudentsStorePayload>,
+  syncToServer = true
+): MasterStudentsStorePayload {
+  const current = readGlobalMasterStore();
+  const nextClasses = payload.classes
+    ? sanitizeClassesList(payload.classes)
+    : current.classes;
+  const effectiveClasses = nextClasses.length
+    ? nextClasses
+    : DEFAULT_CLASSES.map((c) => ({ ...c }));
+  const nextStudents = payload.students
+    ? sanitizeStudentsList(payload.students, effectiveClasses[0].id)
+    : current.students;
+  const nextDeleted = payload.deletedStudentIds
+    ? Array.from(new Set(payload.deletedStudentIds.map(String))).slice(-1000)
+    : current.deletedStudentIds;
+
+  const full: MasterStudentsStorePayload = {
+    classes: effectiveClasses,
+    students: nextStudents,
+    deletedStudentIds: nextDeleted,
+    adminLockedForTeachers:
+      payload.adminLockedForTeachers !== undefined
+        ? Boolean(payload.adminLockedForTeachers)
+        : current.adminLockedForTeachers,
+    updatedAt: payload.updatedAt !== undefined ? payload.updatedAt : new Date().toISOString(),
+    rescuedFromWorkspaces: true,
+  };
+
+  if (typeof window !== 'undefined') {
+    try {
+      window.localStorage.setItem(MASTER_STUDENTS_STORAGE_KEY, JSON.stringify(full));
+    } catch {
+      // ignore quota error
+    }
+
+    // Sinkronkan ke state S saat ini agar cadangan/Google Drive tetap membawa salinan terbaru
+    const api = getAppApi();
+    const s = api?.getState();
+    if (s) {
+      s.adminGuru = normalizeAdminGuruState({
+        ...(s.adminGuru || {}),
+        classes: full.classes,
+        students: full.students,
+      });
+    }
+
+    window.dispatchEvent(new CustomEvent('ma:master-students-updated', { detail: full }));
+
+    if (syncToServer) {
+      if (serverSyncTimer !== null) {
+        window.clearTimeout(serverSyncTimer);
+      }
+      serverSyncTimer = window.setTimeout(() => {
+        fetch('/api/master-students', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            classes: full.classes,
+            students: full.students,
+            deletedStudentIds: full.deletedStudentIds,
+            adminLockedForTeachers: full.adminLockedForTeachers,
+          }),
+        }).catch(() => {
+          // Abaikan diam-diam jika offline; data tetap tersimpan lokal lintas mapel
+        });
+      }, 150);
+    }
+  }
+
+  return full;
+}
+
+export async function syncMasterStudentsWithServer(options?: {
+  rescanWorkspaces?: boolean;
+  preferServer?: boolean;
+}): Promise<MasterStudentsStorePayload> {
+  let local = readGlobalMasterStore();
+
+  if (options?.rescanWorkspaces) {
+    const deletedSet = new Set(local.deletedStudentIds);
+    let classes = local.classes;
+    let students = local.students;
+    for (const ws of collectLocalStorageWorkspaceAdmins()) {
+      const merged = mergeMasterPools(classes, students, ws.classes, ws.students, deletedSet);
+      classes = merged.classes;
+      students = merged.students;
+    }
+    if (students.length !== local.students.length || classes.length !== local.classes.length) {
+      local = writeGlobalMasterStore(
+        {
+          classes,
+          students,
+          updatedAt: new Date().toISOString(),
+        },
+        true
+      );
+    }
+  }
+
+  try {
+    const res = await fetch('/api/master-students');
+    if (!res.ok) return local;
+    const remote = (await res.json()) as Partial<MasterStudentsStorePayload>;
+    const remoteClasses = sanitizeClassesList(remote?.classes);
+    const remoteStudents = sanitizeStudentsList(
+      remote?.students,
+      remoteClasses[0]?.id || local.classes[0]?.id || 'kls_10_a'
+    );
+    const remoteUpdatedMs = remote?.updatedAt ? Date.parse(remote.updatedAt) : 0;
+    const localUpdatedMs = local.updatedAt ? Date.parse(local.updatedAt) : 0;
+
+    // Jika server punya data lebih baru (atau lokal kosong), adopsi dari server
+    if (
+      (remoteStudents.length > 0 || remoteClasses.length > 0) &&
+      (options?.preferServer || local.students.length === 0 || remoteUpdatedMs > localUpdatedMs)
+    ) {
+      const mergedDeleted = Array.from(
+        new Set([...(local.deletedStudentIds || []), ...(remote.deletedStudentIds || [])])
+      ).slice(-1000);
+      const effectiveClasses = remoteClasses.length ? remoteClasses : local.classes;
+      return writeGlobalMasterStore(
+        {
+          classes: effectiveClasses,
+          students: remoteStudents,
+          deletedStudentIds: mergedDeleted,
+          adminLockedForTeachers: Boolean(remote.adminLockedForTeachers),
+          updatedAt: remote.updatedAt || new Date().toISOString(),
+        },
+        false
+      );
+    }
+
+    // Jika lokal punya data (misal baru di-rescue dari mapel Akidah Akhlak) tapi server masih kosong, dorong ke server
+    if (
+      (local.students.length > 0 || local.classes.length > DEFAULT_CLASSES.length) &&
+      remoteStudents.length === 0 &&
+      !remote?.updatedAt
+    ) {
+      await fetch('/api/master-students', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          classes: local.classes,
+          students: local.students,
+          deletedStudentIds: local.deletedStudentIds,
+          adminLockedForTeachers: local.adminLockedForTeachers,
+        }),
+      }).catch(() => {});
+    }
+  } catch {
+    // offline fallback
+  }
+
+  return local;
+}
+
+export function subscribeMasterStudents(listener: () => void): () => void {
+  if (typeof window === 'undefined') return () => {};
+  const handler = () => listener();
+  window.addEventListener('ma:master-students-updated', handler);
+  return () => window.removeEventListener('ma:master-students-updated', handler);
+}
+
 export function getAppApi(): AppApiBridge | null {
   return typeof window !== 'undefined' ? window.__APP_API || null : null;
 }
@@ -117,18 +552,96 @@ export function getLegacyState(): LegacyAppState | null {
 }
 
 export function getAdminGuruState(): AdminGuruState {
+  const master = readGlobalMasterStore();
   const s = getLegacyState();
-  if (!s) return getDefaultAdminGuruState();
-  s.adminGuru = normalizeAdminGuruState(s.adminGuru);
-  return s.adminGuru;
+  if (!s) {
+    const def = getDefaultAdminGuruState();
+    return {
+      ...def,
+      classes: master.classes,
+      students: master.students,
+    };
+  }
+  const normalized = normalizeAdminGuruState(s.adminGuru);
+  const deletedIds = new Set(master.deletedStudentIds);
+  const hasNewStudentsInWorkspace = normalized.students.some(
+    (st) => !deletedIds.has(st.id) && !master.students.some((m) => m.id === st.id)
+  );
+
+  let finalClasses = master.classes;
+  let finalStudents = master.students;
+
+  if (hasNewStudentsInWorkspace) {
+    const merged = mergeMasterPools(
+      master.classes,
+      master.students,
+      normalized.classes,
+      normalized.students,
+      deletedIds
+    );
+    finalClasses = merged.classes;
+    finalStudents = merged.students;
+    if (
+      merged.students.length !== master.students.length ||
+      merged.classes.length !== master.classes.length
+    ) {
+      writeGlobalMasterStore(
+        {
+          classes: merged.classes,
+          students: merged.students,
+        },
+        true
+      );
+    }
+  }
+
+  const combined: AdminGuruState = {
+    ...normalized,
+    classes: finalClasses,
+    students: finalStudents,
+  };
+  s.adminGuru = combined;
+  return combined;
 }
 
-export function updateAdminGuruState(updater: (prev: AdminGuruState, full: LegacyAppState) => AdminGuruState): AdminGuruState {
+export function updateAdminGuruState(
+  updater: (prev: AdminGuruState, full: LegacyAppState) => AdminGuruState
+): AdminGuruState {
   const api = getAppApi();
   if (!api) return getDefaultAdminGuruState();
   const s = api.getState();
-  const prev = normalizeAdminGuruState(s.adminGuru);
+  const prev = getAdminGuruState();
   const next = updater(prev, s);
+
+  const prevStudentIds = new Set(prev.students.map((st) => st.id));
+  const nextStudentIds = new Set(next.students.map((st) => st.id));
+  const newlyDeleted = prev.students
+    .filter((st) => !nextStudentIds.has(st.id))
+    .map((st) => st.id);
+  const reAddedIds = next.students
+    .filter((st) => !prevStudentIds.has(st.id))
+    .map((st) => st.id);
+
+  const classesChanged =
+    JSON.stringify(prev.classes) !== JSON.stringify(next.classes);
+  const studentsChanged =
+    JSON.stringify(prev.students) !== JSON.stringify(next.students);
+
+  if (classesChanged || studentsChanged) {
+    const currentMaster = readGlobalMasterStore();
+    const updatedDeleted = currentMaster.deletedStudentIds
+      .filter((id) => !reAddedIds.includes(id))
+      .concat(newlyDeleted);
+    writeGlobalMasterStore(
+      {
+        classes: next.classes,
+        students: next.students,
+        deletedStudentIds: updatedDeleted,
+      },
+      true
+    );
+  }
+
   s.adminGuru = next;
   api.save();
   return next;
@@ -721,7 +1234,6 @@ export async function parseStudentImportXlsx(
 
   const sheet = wb.Sheets[sheetName];
   const rawRows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '' });
-  const classByName = new Map(classes.map((c) => [c.nama.trim().toLowerCase(), c.id]));
 
   const imported: StudentItem[] = [];
   let skippedRows = 0;
@@ -754,8 +1266,9 @@ export async function parseStudentImportXlsx(
     const jkRaw = (entries['jenis kelamin (l/p)'] || entries['jenis kelamin'] || entries['jk'] || entries['l/p'] || 'L').toUpperCase();
     const jk = jkRaw.startsWith('P') || jkRaw.includes('PEREMPUAN') ? 'P' : 'L';
 
-    const kelasRaw = (entries['kelas/rombel'] || entries['kelas'] || entries['rombel'] || '').toLowerCase();
-    const matchedKelasId = (kelasRaw && classByName.get(kelasRaw)) || fallbackKelasId;
+    const kelasRaw = entries['kelas/rombel'] || entries['kelas'] || entries['rombel'] || '';
+    const matchedKelasId =
+      findMatchingClassId(classes, kelasRaw, fallbackKelasId) || fallbackKelasId;
 
     imported.push({
       id: createUid('std'),

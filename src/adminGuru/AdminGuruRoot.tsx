@@ -1,4 +1,5 @@
-import React from 'react';
+import React, { useEffect } from 'react';
+import { syncMasterStudentsWithServer } from './bridge';
 import { DataSiswaView } from './DataSiswaView';
 import { AbsensiView } from './AbsensiView';
 import { JurnalView } from './JurnalView';
@@ -11,6 +12,10 @@ interface AdminGuruRootProps {
 }
 
 export const AdminGuruRoot: React.FC<AdminGuruRootProps> = ({ view }) => {
+  useEffect(() => {
+    syncMasterStudentsWithServer();
+  }, [view]);
+
   switch (view) {
     case 'kelas-siswa':
       return <DataSiswaView />;

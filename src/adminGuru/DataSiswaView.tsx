@@ -1,14 +1,19 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Check,
   Download,
   FileSpreadsheet,
+  Globe,
+  Lock,
   Pencil,
   Plus,
+  RefreshCw,
   Search,
+  ShieldCheck,
   Trash2,
+  Unlock,
   Upload,
   Users,
-  Check,
   X,
 } from 'lucide-react';
 import {
@@ -17,13 +22,21 @@ import {
   exportStudentsXlsx,
   getAdminGuruState,
   getAppApi,
+  getLegacyState,
   parseStudentImportXlsx,
+  readGlobalMasterStore,
+  subscribeMasterStudents,
+  syncMasterStudentsWithServer,
   updateAdminGuruState,
+  writeGlobalMasterStore,
 } from './bridge';
 import type { JenisKelamin, KelasItem, StudentItem, TingkatKelas } from '../types/adminGuru';
 
 export const DataSiswaView: React.FC = () => {
   const [adminState, setAdminState] = useState(() => getAdminGuruState());
+  const [masterMeta, setMasterMeta] = useState(() => readGlobalMasterStore());
+  const [syncing, setSyncing] = useState(false);
+
   const [filterTingkat, setFilterTingkat] = useState<'all' | TingkatKelas>('all');
   const [filterKelasId, setFilterKelasId] = useState<string>('all');
   const [search, setSearch] = useState('');
@@ -56,6 +69,47 @@ export const DataSiswaView: React.FC = () => {
   } | null>(null);
 
   const api = getAppApi();
+  const legacy = getLegacyState();
+  const activeMapelName = legacy?.ws?.mapel || legacy?.identitas?.mapel || '';
+  const activeKelasName = legacy?.ws?.kelas || legacy?.identitas?.kelas || '';
+  const isLockedForTeachers = masterMeta.adminLockedForTeachers;
+
+  useEffect(() => {
+    const refresh = () => {
+      setAdminState(getAdminGuruState());
+      setMasterMeta(readGlobalMasterStore());
+    };
+    const unsub = subscribeMasterStudents(refresh);
+    return unsub;
+  }, []);
+
+  const handleManualSyncAll = async () => {
+    setSyncing(true);
+    try {
+      const merged = await syncMasterStudentsWithServer({ rescanWorkspaces: true });
+      setAdminState(getAdminGuruState());
+      setMasterMeta(merged);
+      api?.toast(
+        `Sinkronisasi selesai: ${merged.students.length} siswa & ${merged.classes.length} rombel aktif untuk semua mapel.`
+      );
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  const handleToggleLockForTeachers = () => {
+    const nextLocked = !isLockedForTeachers;
+    const saved = writeGlobalMasterStore({ adminLockedForTeachers: nextLocked }, true);
+    setMasterMeta(saved);
+    if (nextLocked) {
+      setShowStudentForm(false);
+      setShowRombelPanel(false);
+      setImportPreview(null);
+      api?.toast('Mode Guru (Hanya Lihat) diaktifkan. Data siswa dikunci untuk pengunggahan Admin.');
+    } else {
+      api?.toast('Mode Admin aktif. Admin dapat menambah, mengimpor, dan mengubah data siswa.');
+    }
+  };
 
   const classesByTingkat = useMemo(() => {
     if (filterTingkat === 'all') return adminState.classes;
@@ -98,6 +152,7 @@ export const DataSiswaView: React.FC = () => {
   }, [filteredStudents]);
 
   const handleOpenAddStudent = () => {
+    if (isLockedForTeachers) return;
     setEditingId(null);
     setFormNisn('');
     setFormNama('');
@@ -111,6 +166,7 @@ export const DataSiswaView: React.FC = () => {
   };
 
   const handleOpenEditStudent = (st: StudentItem) => {
+    if (isLockedForTeachers) return;
     setEditingId(st.id);
     setFormNisn(st.nisn);
     setFormNama(st.nama);
@@ -121,6 +177,7 @@ export const DataSiswaView: React.FC = () => {
 
   const handleSaveStudent = (e: React.FormEvent) => {
     e.preventDefault();
+    if (isLockedForTeachers) return;
     const nama = formNama.trim();
     if (!nama) {
       api?.toast('Nama lengkap siswa wajib diisi.');
@@ -159,21 +216,27 @@ export const DataSiswaView: React.FC = () => {
     setAdminState(updated);
     setShowStudentForm(false);
     setEditingId(null);
-    api?.toast(editingId ? 'Data siswa diperbarui.' : 'Siswa baru berhasil ditambahkan.');
+    api?.toast(
+      editingId
+        ? 'Data siswa diperbarui untuk seluruh mapel.'
+        : 'Siswa baru berhasil ditambahkan ke Master Sekolah.'
+    );
   };
 
   const handleDeleteStudent = (id: string) => {
+    if (isLockedForTeachers) return;
     const updated = updateAdminGuruState((prev) => ({
       ...prev,
       students: prev.students.filter((s) => s.id !== id),
     }));
     setAdminState(updated);
     setConfirmDeleteId(null);
-    api?.toast('Data siswa dihapus.');
+    api?.toast('Data siswa dihapus dari Master Sekolah.');
   };
 
   const handleAddRombel = (e: React.FormEvent) => {
     e.preventDefault();
+    if (isLockedForTeachers) return;
     const nama = newRombelNama.trim();
     if (!nama) {
       api?.toast('Nama rombel wajib diisi (misal: X-C atau XI-IPA-2).');
@@ -198,10 +261,11 @@ export const DataSiswaView: React.FC = () => {
     setAdminState(updated);
     setNewRombelNama('');
     setNewRombelWali('');
-    api?.toast(`Rombel ${nama} berhasil ditambahkan.`);
+    api?.toast(`Rombel ${nama} berhasil ditambahkan untuk semua mapel.`);
   };
 
   const handleDeleteRombel = (kelasId: string) => {
+    if (isLockedForTeachers) return;
     const hasStudents = adminState.students.some((s) => s.kelasId === kelasId);
     if (hasStudents) {
       api?.toast('Kosongkan atau pindahkan siswa dari rombel ini terlebih dahulu.');
@@ -228,6 +292,7 @@ export const DataSiswaView: React.FC = () => {
   };
 
   const handleFileChange = async (ev: React.ChangeEvent<HTMLInputElement>) => {
+    if (isLockedForTeachers) return;
     const file = ev.target.files?.[0];
     ev.target.value = '';
     if (!file) return;
@@ -238,7 +303,11 @@ export const DataSiswaView: React.FC = () => {
         : classesByTingkat[0]?.id || adminState.classes[0]?.id || '';
 
     try {
-      const { imported, skippedRows } = await parseStudentImportXlsx(file, adminState.classes, fallbackId);
+      const { imported, skippedRows } = await parseStudentImportXlsx(
+        file,
+        adminState.classes,
+        fallbackId
+      );
       if (imported.length === 0) {
         api?.toast('Tidak ada baris siswa valid yang ditemukan pada file Excel.');
         return;
@@ -250,13 +319,43 @@ export const DataSiswaView: React.FC = () => {
   };
 
   const handleConfirmImport = () => {
-    if (!importPreview) return;
-    const updated = updateAdminGuruState((prev) => ({
-      ...prev,
-      students: [...prev.students, ...importPreview.rows],
-    }));
+    if (!importPreview || isLockedForTeachers) return;
+    let addedCount = 0;
+    let duplicateCount = 0;
+
+    const updated = updateAdminGuruState((prev) => {
+      const existingSig = new Set(
+        prev.students.map((s) =>
+          s.nisn
+            ? `nisn:${s.nisn.trim().toLowerCase()}::${s.nama.trim().toLowerCase()}`
+            : `name:${s.nama.trim().toLowerCase()}::${s.kelasId}`
+        )
+      );
+      const uniqueNew: StudentItem[] = [];
+      for (const row of importPreview.rows) {
+        const sig = row.nisn
+          ? `nisn:${row.nisn.trim().toLowerCase()}::${row.nama.trim().toLowerCase()}`
+          : `name:${row.nama.trim().toLowerCase()}::${row.kelasId}`;
+        if (existingSig.has(sig)) {
+          duplicateCount++;
+          continue;
+        }
+        existingSig.add(sig);
+        uniqueNew.push(row);
+      }
+      addedCount = uniqueNew.length;
+      return {
+        ...prev,
+        students: [...prev.students, ...uniqueNew],
+      };
+    });
+
     setAdminState(updated);
-    api?.toast(`Berhasil mengimpor ${importPreview.rows.length} siswa.`);
+    api?.toast(
+      duplicateCount > 0
+        ? `Berhasil mengimpor ${addedCount} siswa baru (${duplicateCount} duplikat dilewati). Tersedia untuk semua mapel!`
+        : `Berhasil mengimpor ${addedCount} siswa ke Master Sekolah untuk seluruh mapel!`
+    );
     setImportPreview(null);
   };
 
@@ -277,32 +376,95 @@ export const DataSiswaView: React.FC = () => {
 
   return (
     <div className="max-w-[1100px] mx-auto space-y-4">
+      {/* Banner Pusat Data Terintegrasi Lintas Mapel & Guru */}
+      <div className="rounded-xl border border-[#8ac5b2] bg-[#e7f5ef] px-4 py-3 text-xs text-[#0b3c32] flex flex-wrap items-center justify-between gap-3 noprint">
+        <div className="flex items-start gap-2.5 min-w-0">
+          <Globe className="w-5 h-5 text-[#0f6b58] shrink-0 mt-0.5" />
+          <div>
+            <div className="font-bold text-sm text-[#073329]">
+              Pusat Master Data Kelas &amp; Siswa Sekolah (Berlaku untuk Semua Mapel &amp; Guru)
+            </div>
+            <div className="text-[#1f5547] mt-0.5 leading-relaxed">
+              Cukup diunggah <b>1 kali oleh Admin</b> — seluruh mata pelajaran (
+              <i>Akidah Akhlak, Al-Qur&apos;an Hadis, Fikih, SKI, Bahasa Arab, dll.</i>) otomatis
+              memakai daftar siswa ini di Absensi, Jurnal, Daftar Nilai, dan Kuis.
+              {activeMapelName && (
+                <span className="ml-1 font-semibold text-[#0b3c32]">
+                  (Ruang kerja aktif: {activeMapelName}
+                  {activeKelasName ? ` · ${activeKelasName}` : ''})
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            className="btn sm"
+            disabled={syncing}
+            onClick={handleManualSyncAll}
+            title="Tarik data siswa yang pernah diunggah dari mapel lain dan sinkronkan ke server"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${syncing ? 'animate-spin' : ''}`} />
+            {syncing ? 'Menyinkronkan...' : 'Sinkronkan Semua Mapel'}
+          </button>
+          <button
+            type="button"
+            className={`btn sm ${isLockedForTeachers ? 'primary' : ''}`}
+            onClick={handleToggleLockForTeachers}
+            title="Admin dapat mengunci unggah siswa agar guru mapel hanya melihat roster"
+          >
+            {isLockedForTeachers ? (
+              <>
+                <Unlock className="w-3.5 h-3.5" /> Aktifkan Mode Admin (Edit/Unggah)
+              </>
+            ) : (
+              <>
+                <Lock className="w-3.5 h-3.5" /> Kunci untuk Guru (Hanya Lihat)
+              </>
+            )}
+          </button>
+        </div>
+      </div>
+
+      {isLockedForTeachers && (
+        <div className="rounded-xl border border-[#e3c87f] bg-[#fbf3de] px-4 py-2.5 text-xs text-[#614407] flex items-center gap-2 noprint">
+          <ShieldCheck className="w-4 h-4 shrink-0 text-[#8b6416]" />
+          <span>
+            <b>Mode Guru (Hanya Lihat):</b> Pengunggahan dan perubahan daftar siswa sedang dikunci khusus untuk Admin sekolah. Guru mapel langsung dapat memakai seluruh data siswa ini pada menu Absensi, Nilai, dan Kuis.
+          </span>
+        </div>
+      )}
+
       <div className="panel noprint">
         <div className="flex flex-wrap items-start justify-between gap-3 border-b border-[#e9e4d4] pb-3 mb-4">
           <div>
             <h2 className="!border-0 !pb-0 !mb-1">Master Data Kelas &amp; Siswa</h2>
             <p className="hint !mb-0">
-              Pusat relasi <b>kelas_id</b> &amp; peserta didik aktif (Kelas 10, 11, 12) yang terhubung ke Absensi, Jurnal, Daftar Nilai, dan Kuis Interaktif.
+              Total tersimpan di Master Sekolah: <b>{adminState.students.length} siswa</b> pada{' '}
+              <b>{adminState.classes.length} rombel</b> (terhubung ke seluruh mapel).
             </p>
           </div>
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              className="btn sm"
-              onClick={() => setShowRombelPanel((v) => !v)}
-            >
-              <Users className="w-4 h-4" />
-              {showRombelPanel ? 'Tutup Kelola Rombel' : 'Kelola Rombel'}
-            </button>
-            <button
-              type="button"
-              className="btn primary"
-              onClick={handleOpenAddStudent}
-            >
-              <Plus className="w-4 h-4" />
-              Tambah Siswa
-            </button>
-          </div>
+          {!isLockedForTeachers && (
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                className="btn sm"
+                onClick={() => setShowRombelPanel((v) => !v)}
+              >
+                <Users className="w-4 h-4" />
+                {showRombelPanel ? 'Tutup Kelola Rombel' : 'Kelola Rombel'}
+              </button>
+              <button
+                type="button"
+                className="btn primary"
+                onClick={handleOpenAddStudent}
+              >
+                <Plus className="w-4 h-4" />
+                Tambah Siswa
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Filter Tingkat & Rombel + Impor/Ekspor Excel */}
@@ -363,30 +525,34 @@ export const DataSiswaView: React.FC = () => {
         {/* Bar Impor & Ekspor Excel */}
         <div className="mt-4 pt-3 border-t border-[#eaf0e9] flex flex-wrap items-center justify-between gap-2">
           <div className="flex flex-wrap gap-2 items-center text-xs text-[#64736c]">
-            <span className="badge">Total: {stats.total} siswa</span>
+            <span className="badge">Tampil: {stats.total} siswa</span>
             <span className="badge">Putra (L): {stats.putra}</span>
             <span className="badge">Putri (P): {stats.putri}</span>
           </div>
           <div className="flex flex-wrap gap-2">
-            <button type="button" className="btn sm" onClick={handleDownloadTemplate}>
-              <FileSpreadsheet className="w-4 h-4 text-[#126451]" />
-              Unduh Template Excel (.xlsx)
-            </button>
-            <button
-              type="button"
-              className="btn sm"
-              onClick={() => fileInputRef.current?.click()}
-            >
-              <Upload className="w-4 h-4 text-[#126451]" />
-              Impor Excel (.xlsx)
-            </button>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".xlsx,.xls"
-              className="hidden"
-              onChange={handleFileChange}
-            />
+            {!isLockedForTeachers && (
+              <>
+                <button type="button" className="btn sm" onClick={handleDownloadTemplate}>
+                  <FileSpreadsheet className="w-4 h-4 text-[#126451]" />
+                  Unduh Template Excel (.xlsx)
+                </button>
+                <button
+                  type="button"
+                  className="btn sm"
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <Upload className="w-4 h-4 text-[#126451]" />
+                  Impor Excel (.xlsx)
+                </button>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".xlsx,.xls"
+                  className="hidden"
+                  onChange={handleFileChange}
+                />
+              </>
+            )}
             <button type="button" className="btn sm" onClick={handleExportStudents}>
               <Download className="w-4 h-4 text-[#126451]" />
               Ekspor Excel (.xlsx)
@@ -396,7 +562,7 @@ export const DataSiswaView: React.FC = () => {
       </div>
 
       {/* Panel Kelola Rombel */}
-      {showRombelPanel && (
+      {!isLockedForTeachers && showRombelPanel && (
         <div className="panel noprint">
           <h2>Kelola Rombel / Kelas (10, 11, 12)</h2>
           <form onSubmit={handleAddRombel} className="grid grid-cols-1 sm:grid-cols-5 gap-2.5 items-end mb-4">
@@ -500,7 +666,7 @@ export const DataSiswaView: React.FC = () => {
       )}
 
       {/* Form Tambah / Edit Siswa */}
-      {showStudentForm && (
+      {!isLockedForTeachers && showStudentForm && (
         <div className="panel noprint border-l-4 border-l-[#126451]">
           <h2>{editingId ? 'Edit Data Siswa' : 'Tambah Siswa Baru'}</h2>
           <form onSubmit={handleSaveStudent} className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-end">
@@ -569,7 +735,7 @@ export const DataSiswaView: React.FC = () => {
       )}
 
       {/* Preview Impor Excel */}
-      {importPreview && (
+      {!isLockedForTeachers && importPreview && (
         <div className="panel noprint border-l-4 border-l-[#c7a45b]">
           <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
             <div>
@@ -577,11 +743,39 @@ export const DataSiswaView: React.FC = () => {
                 Pratinjau Impor Excel: {importPreview.fileName}
               </h2>
               <p className="hint !mb-0">
-                Ditemukan <b>{importPreview.rows.length}</b> siswa siap diimpor
-                {importPreview.skipped > 0 ? ` (${importPreview.skipped} baris contoh/kosong dilewati)` : ''}.
+                Ditemukan <b>{importPreview.rows.length}</b> siswa siap disimpan ke{' '}
+                <b>Master Sekolah (Semua Mapel)</b>
+                {importPreview.skipped > 0
+                  ? ` (${importPreview.skipped} baris contoh/kosong dilewati)`
+                  : ''}
+                .
               </p>
             </div>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                className="mini-select"
+                title="Ubah kelas tujuan untuk seluruh baris impor"
+                value=""
+                onChange={(e) => {
+                  const targetKelasId = e.target.value;
+                  if (!targetKelasId) return;
+                  setImportPreview((prev) =>
+                    prev
+                      ? {
+                          ...prev,
+                          rows: prev.rows.map((r) => ({ ...r, kelasId: targetKelasId })),
+                        }
+                      : null
+                  );
+                }}
+              >
+                <option value="">Setel Kelas Semua Baris...</option>
+                {adminState.classes.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    Kelas {c.tingkat} — {c.nama}
+                  </option>
+                ))}
+              </select>
               <button type="button" className="btn sm" onClick={() => setImportPreview(null)}>
                 <X className="w-4 h-4" /> Batal
               </button>
@@ -623,7 +817,9 @@ export const DataSiswaView: React.FC = () => {
           <div className="empty">
             <b>Belum ada data siswa pada filter ini</b>
             <span>
-              Tambahkan siswa satu per satu melalui tombol <b>Tambah Siswa</b>, atau gunakan <b>Unduh Template Excel</b> lalu <b>Impor Excel (.xlsx)</b> untuk unggah massal per kelas.
+              {adminState.students.length > 0
+                ? 'Coba ubah filter Tingkat/Rombel ke "Semua" atau cek kolom pencarian.'
+                : 'Klik "Sinkronkan Semua Mapel" jika data pernah diunggah pada mapel lain, atau gunakan tombol Tambah Siswa / Impor Excel (.xlsx).'}
             </span>
           </div>
         ) : (
@@ -636,7 +832,7 @@ export const DataSiswaView: React.FC = () => {
                   <th>Nama Lengkap</th>
                   <th className="c w-24">Jenis Kelamin</th>
                   <th>Kelas / Rombel</th>
-                  <th className="c w-36">Aksi</th>
+                  {!isLockedForTeachers && <th className="c w-36">Aksi</th>}
                 </tr>
               </thead>
               <tbody>
@@ -658,45 +854,47 @@ export const DataSiswaView: React.FC = () => {
                           {cls ? `(Kelas ${cls.tingkat} · ${cls.jurusan})` : ''}
                         </span>
                       </td>
-                      <td className="c">
-                        {confirmDeleteId === st.id ? (
-                          <div className="flex justify-center gap-1">
-                            <button
-                              type="button"
-                              className="btn sm danger"
-                              onClick={() => handleDeleteStudent(st.id)}
-                            >
-                              Ya, Hapus
-                            </button>
-                            <button
-                              type="button"
-                              className="btn sm"
-                              onClick={() => setConfirmDeleteId(null)}
-                            >
-                              Batal
-                            </button>
-                          </div>
-                        ) : (
-                          <div className="flex justify-center gap-1">
-                            <button
-                              type="button"
-                              className="btn sm"
-                              title="Edit Siswa"
-                              onClick={() => handleOpenEditStudent(st)}
-                            >
-                              <Pencil className="w-3.5 h-3.5" />
-                            </button>
-                            <button
-                              type="button"
-                              className="btn sm danger"
-                              title="Hapus Siswa"
-                              onClick={() => setConfirmDeleteId(st.id)}
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        )}
-                      </td>
+                      {!isLockedForTeachers && (
+                        <td className="c">
+                          {confirmDeleteId === st.id ? (
+                            <div className="flex justify-center gap-1">
+                              <button
+                                type="button"
+                                className="btn sm danger"
+                                onClick={() => handleDeleteStudent(st.id)}
+                              >
+                                Ya, Hapus
+                              </button>
+                              <button
+                                type="button"
+                                className="btn sm"
+                                onClick={() => setConfirmDeleteId(null)}
+                              >
+                                Batal
+                              </button>
+                            </div>
+                          ) : (
+                            <div className="flex justify-center gap-1">
+                              <button
+                                type="button"
+                                className="btn sm"
+                                title="Edit Siswa"
+                                onClick={() => handleOpenEditStudent(st)}
+                              >
+                                <Pencil className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                className="btn sm danger"
+                                title="Hapus Siswa"
+                                onClick={() => setConfirmDeleteId(st.id)}
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          )}
+                        </td>
+                      )}
                     </tr>
                   );
                 })}

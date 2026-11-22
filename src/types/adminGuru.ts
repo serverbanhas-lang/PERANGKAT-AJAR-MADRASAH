@@ -292,6 +292,14 @@ export interface LegacyAppState {
     auto?: boolean;
     cadangan?: number;
   };
+  ws?: {
+    id?: string;
+    gid?: string;
+    guru?: string;
+    mapel?: string;
+    kelas?: string;
+    fase?: string;
+  };
   adminGuru: AdminGuruState;
 }
 
