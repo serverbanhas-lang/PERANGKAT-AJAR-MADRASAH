@@ -10,3 +10,47 @@
     list-style: decimal;
   }
 }
+
+@keyframes pptSlideIn {
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes pptFadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes pptZoomIn {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.ppt-anim-slide {
+  animation: pptSlideIn 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.ppt-anim-fade {
+  animation: pptFadeIn 0.3s ease;
+}
+
+.ppt-anim-zoom {
+  animation: pptZoomIn 0.28s ease;
+}
+

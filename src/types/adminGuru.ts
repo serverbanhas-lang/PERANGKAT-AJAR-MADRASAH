@@ -124,15 +124,35 @@ export type MediaSlideTipe =
   | 'refleksi'
   | 'rangkuman';
 
+export type MediaSlideLayout =
+  | 'standar'
+  | 'pembuka'
+  | 'alur'
+  | 'perbandingan'
+  | 'kartu-grid'
+  | 'kuis';
+
+export type MediaThemeKey = 'zamrud' | 'biru' | 'emas' | 'gelap';
+
 export interface MediaSlideItem {
   id: string;
   judulSlide: string;
   tipe: MediaSlideTipe;
+  layout?: MediaSlideLayout;
   ringkasan: string;
   poinUtama: string[];
+  diagramLangkah?: string[];
+  perbandingan?: {
+    judulKiri: string;
+    isiKiri: string[];
+    judulKanan: string;
+    isiKanan: string[];
+  };
   visualIde: string;
   catatanGuru: string;
   pertanyaanInteraktif?: string;
+  jawabanInteraktif?: string;
+  html5?: string;
 }
 
 export interface LearningMediaItem {
@@ -140,6 +160,7 @@ export interface LearningMediaItem {
   judul: string;
   subjudul?: string;
   jenis: MediaPembelajaranJenis;
+  tema?: MediaThemeKey;
   mapel: string;
   kelasId: string;
   kelasLabel: string;

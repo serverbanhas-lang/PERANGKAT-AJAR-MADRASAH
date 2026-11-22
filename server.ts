@@ -463,7 +463,7 @@ INSTRUKSI:
     }
   });
 
-  // Generator Media Pembelajaran Interaktif dari Bahan Ajar Mendalam
+  // Generator Media Pembelajaran Interaktif (JSON Presentasi PowerPoint HTML5/JS)
   app.post('/api/generate-media', async (req, res) => {
     try {
       const ai = getGenAI();
@@ -485,14 +485,14 @@ INSTRUKSI:
 
       const slideTarget = Math.max(4, Math.min(16, Number(jumlahSlide) || 8));
       const jenisDescMap: Record<string, string> = {
-        'slide-presentasi': 'Slide Presentasi Mengajar di Kelas / Proyektor',
-        'peta-konsep': 'Peta Konsep & Alur Pemahaman Bertahap',
+        'slide-presentasi': 'Slide Presentasi PowerPoint Interaktif HTML5/JS untuk Proyektor Kelas',
+        'peta-konsep': 'Peta Konsep & Diagram Alur Pemahaman Bertahap',
         'kartu-ajar': 'Kartu Ajar Interaktif & Flashcard Konsep',
-        'studi-kasus': 'Media Studi Kasus, Masalah Kontekstual & Diskusi Kelompok',
+        'studi-kasus': 'Media Studi Kasus, Perbandingan & Diskusi Kelompok',
       };
 
-      const prompt = `Anda adalah desainer media pembelajaran interaktif Madrasah Aliyah berbasis Pembelajaran Mendalam dan Kurikulum Berbasis Cinta (KBC).
-Ubah bahan ajar mendalam di bawah ini menjadi media pembelajaran kelas yang menarik, runtut, dan mudah dipahami peserta didik.
+      const prompt = `Anda adalah desainer media presentasi PowerPoint HTML5/JavaScript untuk Madrasah Aliyah berbasis Pembelajaran Mendalam dan Kurikulum Berbasis Cinta (KBC).
+Ubah BAHAN AJAR MENDALAM di bawah ini menjadi objek JSON presentasi PowerPoint yang runtut, interaktif, visual, dan siap dijalankan langsung di pemutar slide HTML5.
 
 IDENTITAS MEDIA:
 - Judul Media: ${judul || 'Media Pembelajaran'}
@@ -501,22 +501,27 @@ IDENTITAS MEDIA:
 - Kelas: ${kelas || '-'}
 - Tujuan Pembelajaran: ${tp || '-'}
 - Tema KBC: ${kbc || '-'}
-- Target Jumlah Slide/Kartu: ${slideTarget}
+- Target Jumlah Slide: ${slideTarget}
 
 BAHAN AJAR MENDALAM:
 ${String(materiText).slice(0, 18000)}
 
-INSTRUKSI:
-1. Susun tepat ${slideTarget} slide/kartu yang runtut: mulai dari pembuka/pemantik, tujuan, konsep kunci, uraian inti, contoh penerapan, integrasi nilai KBC, kuis cepat/cek pemahaman, hingga refleksi dan rangkuman.
-2. Pada setiap slide wajib mengisi:
-   - judulSlide: judul singkat & menarik
+INSTRUKSI PENYUSUNAN SLIDE POWERPOINT:
+1. Susun tepat ${slideTarget} slide yang runtut: Slide 1 pembuka & pemantik, tujuan belajar, konsep kunci, uraian inti, bagan alur/langkah proses (gunakan layout "alur" + isi diagramLangkah), perbandingan dua konsep jika relevan (gunakan layout "perbandingan" + isi perbandingan), contoh penerapan/kartu grid (layout "kartu-grid"), integrasi nilai KBC, kuis cepat/cek pemahaman (layout "kuis" + jawabanInteraktif), hingga refleksi & rangkuman.
+2. Pilih tema warna: salah satu dari "zamrud", "biru", "emas", "gelap" (rekomendasi default "zamrud").
+3. Pada setiap slide wajib mengisi:
+   - judulSlide: judul singkat, kuat & menarik untuk layar proyektor (maks 10 kata)
    - tipe: pilih salah satu dari "pembuka", "tujuan", "konsep", "uraian", "contoh", "visual", "kbc", "kuis-cepat", "refleksi", "rangkuman"
-   - ringkasan: narasi singkat 2-4 kalimat yang ramah layar proyektor
-   - poinUtama: array 3-5 poin ringkas padat
+   - layout: pilih salah satu dari "pembuka", "standar", "kartu-grid", "alur", "perbandingan", "kuis"
+   - ringkasan: narasi singkat 1-3 kalimat yang tajam & ramah layar proyektor
+   - poinUtama: array 3-5 poin ringkas padat (akan muncul bertahap per klik seperti animasi PowerPoint)
+   - diagramLangkah: array langkah berurutan jika layout="alur" (contoh: ["1. Amati masalah", "2. Analisis konsep", "3. Simpulkan"]), atau array kosong [] jika bukan layout alur
+   - perbandingan: jika layout="perbandingan" isi { judulKiri, isiKiri (array string), judulKanan, isiKanan (array string) }; jika bukan layout perbandingan isi { judulKiri: "", isiKiri: [], judulKanan: "", isiKanan: [] }
    - visualIde: ide konkret bagan/diagram/ilustrasi untuk slide ini
-   - catatanGuru: panduan lisan guru saat menayangkan slide ini
-   - pertanyaanInteraktif: 1 pertanyaan singkat untuk mengajak siswa aktif
-3. Isi pula tujuanPembelajaran, integrasiKbc, aktivitasKelas, dan glosarium istilah kunci. Gunakan bahasa Indonesia yang jelas dan baku.`;
+   - catatanGuru: panduan lisan (Speaker Notes) bagi guru saat menayangkan slide ini
+   - pertanyaanInteraktif: 1 pertanyaan diskusi/kuis singkat untuk kelas
+   - jawabanInteraktif: kunci/arah jawaban untuk ditampilkan guru saat tombol "Tampilkan Jawaban" diklik
+4. Isi pula tujuanPembelajaran, integrasiKbc, aktivitasKelas, dan glosarium istilah kunci. Gunakan bahasa Indonesia yang jelas dan baku.`;
 
       const response = await generateContentWithRetry(ai, {
         model: 'gemini-4-hydrogen',
@@ -528,6 +533,7 @@ INSTRUKSI:
             properties: {
               judul: { type: Type.STRING },
               subjudul: { type: Type.STRING },
+              tema: { type: Type.STRING, description: 'zamrud, biru, emas, atau gelap' },
               tujuanPembelajaran: { type: Type.STRING },
               integrasiKbc: { type: Type.STRING },
               aktivitasKelas: { type: Type.STRING },
@@ -548,11 +554,26 @@ INSTRUKSI:
                   properties: {
                     judulSlide: { type: Type.STRING },
                     tipe: { type: Type.STRING },
+                    layout: {
+                      type: Type.STRING,
+                      description: 'pembuka, standar, kartu-grid, alur, perbandingan, atau kuis',
+                    },
                     ringkasan: { type: Type.STRING },
                     poinUtama: { type: Type.ARRAY, items: { type: Type.STRING } },
+                    diagramLangkah: { type: Type.ARRAY, items: { type: Type.STRING } },
+                    perbandingan: {
+                      type: Type.OBJECT,
+                      properties: {
+                        judulKiri: { type: Type.STRING },
+                        isiKiri: { type: Type.ARRAY, items: { type: Type.STRING } },
+                        judulKanan: { type: Type.STRING },
+                        isiKanan: { type: Type.ARRAY, items: { type: Type.STRING } },
+                      },
+                    },
                     visualIde: { type: Type.STRING },
                     catatanGuru: { type: Type.STRING },
                     pertanyaanInteraktif: { type: Type.STRING },
+                    jawabanInteraktif: { type: Type.STRING },
                   },
                 },
               },

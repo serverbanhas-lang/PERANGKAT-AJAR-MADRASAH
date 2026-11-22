@@ -13,7 +13,9 @@ import type {
   LegacyUnit,
   MediaPembelajaranJenis,
   MediaSlideItem,
+  MediaSlideLayout,
   MediaSlideTipe,
+  MediaThemeKey,
   QuizQuestion,
   StudentGradeRow,
   StudentItem,
@@ -990,11 +992,23 @@ const VALID_SLIDE_TYPES: MediaSlideTipe[] = [
   'rangkuman',
 ];
 
+const VALID_SLIDE_LAYOUTS: MediaSlideLayout[] = [
+  'standar',
+  'pembuka',
+  'alur',
+  'perbandingan',
+  'kartu-grid',
+  'kuis',
+];
+
+const VALID_THEMES: MediaThemeKey[] = ['zamrud', 'biru', 'emas', 'gelap'];
+
 export function normalizeMediaPayload(
   rawObj: unknown,
   defaults: {
     judul?: string;
     jenis?: MediaPembelajaranJenis;
+    tema?: MediaThemeKey;
     mapel?: string;
     kelasId?: string;
     kelasLabel?: string;
@@ -1033,6 +1047,19 @@ export function normalizeMediaPayload(
     .map((sl, idx) => {
       const rawTipe = String(sl.tipe || sl.type || 'uraian').toLowerCase().trim() as MediaSlideTipe;
       const tipe: MediaSlideTipe = VALID_SLIDE_TYPES.includes(rawTipe) ? rawTipe : 'uraian';
+      const rawLayout = String(sl.layout || '').toLowerCase().trim() as MediaSlideLayout;
+      const inferredLayout: MediaSlideLayout = VALID_SLIDE_LAYOUTS.includes(rawLayout)
+        ? rawLayout
+        : tipe === 'pembuka'
+          ? 'pembuka'
+          : tipe === 'kuis-cepat'
+            ? 'kuis'
+            : Array.isArray(sl.diagramLangkah) && sl.diagramLangkah.length > 0
+              ? 'alur'
+              : sl.perbandingan && typeof sl.perbandingan === 'object'
+                ? 'perbandingan'
+                : 'standar';
+
       const rawBullets = sl.poinUtama ?? sl.poin ?? sl.bullets ?? sl.points;
       const poinUtama = Array.isArray(rawBullets)
         ? rawBullets.map((b) => String(b ?? '').trim()).filter(Boolean)
@@ -1043,17 +1070,53 @@ export function normalizeMediaPayload(
               .filter(Boolean)
           : [];
 
+      const rawLangkah = sl.diagramLangkah ?? sl.langkah ?? sl.alur ?? sl.steps;
+      const diagramLangkah = Array.isArray(rawLangkah)
+        ? rawLangkah.map((s) => String(s ?? '').trim()).filter(Boolean)
+        : undefined;
+
+      const rawCmp = (sl.perbandingan || sl.comparison) as Record<string, unknown> | undefined;
+      const perbandingan =
+        rawCmp && typeof rawCmp === 'object'
+          ? {
+              judulKiri: String(rawCmp.judulKiri || rawCmp.leftTitle || 'Aspek A').trim(),
+              isiKiri: Array.isArray(rawCmp.isiKiri ?? rawCmp.leftItems)
+                ? ((rawCmp.isiKiri ?? rawCmp.leftItems) as unknown[])
+                    .map((x) => String(x ?? '').trim())
+                    .filter(Boolean)
+                : [],
+              judulKanan: String(rawCmp.judulKanan || rawCmp.rightTitle || 'Aspek B').trim(),
+              isiKanan: Array.isArray(rawCmp.isiKanan ?? rawCmp.rightItems)
+                ? ((rawCmp.isiKanan ?? rawCmp.rightItems) as unknown[])
+                    .map((x) => String(x ?? '').trim())
+                    .filter(Boolean)
+                : [],
+            }
+          : undefined;
+
+      const rawHtml5 = String(sl.html5 || sl.html || sl.htmlContent || '').trim();
+
       return {
         id: createUid(`sl_${idx}`),
         judulSlide: String(sl.judulSlide || sl.judul || sl.title || `Slide ${idx + 1}`).trim(),
         tipe,
+        layout: inferredLayout,
         ringkasan: String(sl.ringkasan || sl.narasi || sl.isi || sl.content || '').trim(),
         poinUtama,
+        diagramLangkah: diagramLangkah && diagramLangkah.length > 0 ? diagramLangkah : undefined,
+        perbandingan:
+          perbandingan && (perbandingan.isiKiri.length > 0 || perbandingan.isiKanan.length > 0)
+            ? perbandingan
+            : undefined,
         visualIde: String(sl.visualIde || sl.visual || sl.ilustrasi || sl.diagram || '').trim(),
         catatanGuru: String(sl.catatanGuru || sl.catatan || sl.speakerNotes || '').trim(),
         pertanyaanInteraktif: String(
           sl.pertanyaanInteraktif || sl.pertanyaan || sl.cekPemahaman || ''
         ).trim(),
+        jawabanInteraktif: String(
+          sl.jawabanInteraktif || sl.jawaban || sl.kunciJawaban || ''
+        ).trim(),
+        html5: rawHtml5 || undefined,
       };
     });
 
@@ -1068,6 +1131,9 @@ export function normalizeMediaPayload(
         .filter((g) => g.istilah && g.makna)
     : [];
 
+  const rawTema = String(root?.tema || defaults.tema || 'zamrud').toLowerCase() as MediaThemeKey;
+  const tema: MediaThemeKey = VALID_THEMES.includes(rawTema) ? rawTema : 'zamrud';
+
   const now = new Date().toISOString();
   return {
     id: createUid('med'),
@@ -1078,6 +1144,7 @@ export function normalizeMediaPayload(
     )
       ? String(root?.jenis)
       : defaults.jenis || 'slide-presentasi') as MediaPembelajaranJenis,
+    tema,
     mapel: String(defaults.mapel || root?.mapel || 'Mata Pelajaran').trim(),
     kelasId: String(defaults.kelasId || ''),
     kelasLabel: String(defaults.kelasLabel || ''),
@@ -1180,14 +1247,14 @@ export function buildMediaExternalPrompt(params: {
   jumlahSlide: number;
 }): string {
   const jenisMap: Record<MediaPembelajaranJenis, string> = {
-    'slide-presentasi': 'Slide Presentasi Mengajar di Kelas / Proyektor',
-    'peta-konsep': 'Peta Konsep & Alur Pemahaman Bertahap',
+    'slide-presentasi': 'Slide Presentasi Mengajar seperti PowerPoint (HTML5/JS)',
+    'peta-konsep': 'Peta Konsep & Diagram Alur Materi Interaktif',
     'kartu-ajar': 'Kartu Ajar Interaktif & Flashcard Konsep',
-    'studi-kasus': 'Media Studi Kasus, Masalah Kontekstual & Diskusi Kelompok',
+    'studi-kasus': 'Slide Studi Kasus, Perbandingan & Diskusi Kelompok',
   };
 
-  return `Anda adalah desainer media pembelajaran interaktif Madrasah Aliyah berbasis Pembelajaran Mendalam & Kurikulum Berbasis Cinta (KBC).
-Ubah BAHAN AJAR MENDALAM berikut menjadi media pembelajaran siap tayang di kelas.
+  return `Anda adalah desainer slide presentasi interaktif (setara PowerPoint HTML5/JavaScript) untuk Madrasah Aliyah berbasis Pembelajaran Mendalam & Kurikulum Berbasis Cinta (KBC).
+Ubah BAHAN AJAR MENDALAM berikut menjadi data JSON presentasi PowerPoint interaktif yang siap dijalankan di aplikasi HTML5.
 
 IDENTITAS MEDIA:
 - Judul Media: ${params.judul || 'Media Pembelajaran'}
@@ -1196,31 +1263,36 @@ IDENTITAS MEDIA:
 - Kelas: ${params.kelas || '-'}
 - Tujuan Pembelajaran: ${params.tp || '-'}
 - Tema Kurikulum Berbasis Cinta (KBC): ${params.kbc || '-'}
-- Target Jumlah Slide/Kartu: ${params.jumlahSlide} slide/kartu
+- Target Jumlah Slide: ${params.jumlahSlide} slide
 
 BAHAN AJAR MENDALAM (SUMBER UTAMA):
 ${String(params.materiText || '').slice(0, 16000)}
 
-INSTRUKSI PENYUSUNAN:
-1. Susun tepat ${params.jumlahSlide} slide/kartu yang runtut: mulai dari pembuka & pemantik, tujuan belajar, konsep kunci, uraian materi inti, contoh penerapan nyata, integrasi KBC, kuis cepat/cek pemahaman, hingga refleksi & rangkuman.
-2. Pada setiap slide sertakan:
-   - "judulSlide": judul singkat & menarik
+INSTRUKSI PENYUSUNAN SLIDE POWERPOINT:
+1. Susun tepat ${params.jumlahSlide} slide yang runtut seperti presentasi PowerPoint profesional: Slide 1 pembuka & pemantik, tujuan belajar, konsep kunci, uraian materi bertahap, bagan alur/langkah proses ("diagramLangkah"), perbandingan dua konsep ("perbandingan" jika relevan), contoh penerapan nyata, integrasi KBC, kuis cepat/cek pemahaman dengan "jawabanInteraktif", hingga refleksi & rangkuman.
+2. Pada setiap slide wajib isi:
+   - "judulSlide": judul singkat & kuat (maks 10 kata)
    - "tipe": salah satu dari ("pembuka" | "tujuan" | "konsep" | "uraian" | "contoh" | "visual" | "kbc" | "kuis-cepat" | "refleksi" | "rangkuman")
-   - "ringkasan": narasi singkat 2-4 kalimat yang mudah dipahami siswa di layar
-   - "poinUtama": array 3-5 poin ringkas padat (bukan paragraf panjang)
-   - "visualIde": saran konkret bagan/diagram/tabel/ilustrasi visual untuk ditampilkan atau digambar guru
-   - "catatanGuru": panduan lisan atau langkah fasilitasi guru saat menayangkan slide ini
-   - "pertanyaanInteraktif": 1 pertanyaan diskusi singkat untuk mengajak siswa aktif (boleh kosong jika tidak perlu)
-3. Sertakan "glosarium" istilah penting dan "aktivitasKelas" singkat.
+   - "layout": salah satu dari ("pembuka" | "standar" | "kartu-grid" | "alur" | "perbandingan" | "kuis")
+   - "ringkasan": teks inti 1-3 kalimat yang tajam & enak dibaca di layar proyektor
+   - "poinUtama": array 3-5 poin ringkas padat (akan dianimasikan bertahap per klik seperti PowerPoint)
+   - "diagramLangkah": array langkah berurutan (isi bila layout="alur", misal ["Langkah 1: ...", "Langkah 2: ...", "Langkah 3: ..."], kosongkan [] jika tidak perlu)
+   - "perbandingan": objek { "judulKiri": "", "isiKiri": [""], "judulKanan": "", "isiKanan": [""] } (isi bila layout="perbandingan", atau null jika tidak perlu)
+   - "visualIde": ide visual/ilustrasi/grafik konkret untuk slide ini
+   - "catatanGuru": catatan pembicara (Speaker Notes) bagi guru saat mengajar
+   - "pertanyaanInteraktif": pertanyaan diskusi/kuis untuk siswa di slide ini
+   - "jawabanInteraktif": arah/kunci jawaban yang muncul saat guru menekan tombol "Tampilkan Jawaban"
+3. Sertakan "glosarium" istilah kunci dan "aktivitasKelas" singkat.
 
 KELUARAN WAJIB:
-Kembalikan HANYA JSON valid (tanpa teks pengantar atau markdown) dengan struktur persis berikut:
+Kembalikan HANYA JSON valid (tanpa kalimat pengantar/penutup dan tanpa markdown) dengan struktur persis seperti berikut:
 {
   "judul": "${(params.judul || 'Media Pembelajaran').replace(/"/g, '\\"')}",
-  "subjudul": "Subjudul singkat media pembelajaran",
+  "subjudul": "Subjudul singkat presentasi",
+  "tema": "zamrud",
   "tujuanPembelajaran": "Tujuan pembelajaran ringkas",
   "integrasiKbc": "Keterkaitan materi dengan nilai Kurikulum Berbasis Cinta",
-  "aktivitasKelas": "Saran aktivitas interaktif siswa menggunakan media ini",
+  "aktivitasKelas": "Saran aktivitas interaktif siswa selama presentasi",
   "glosarium": [
     { "istilah": "Istilah 1", "makna": "Penjelasan singkat istilah" }
   ],
@@ -1228,13 +1300,18 @@ Kembalikan HANYA JSON valid (tanpa teks pengantar atau markdown) dengan struktur
     {
       "judulSlide": "Judul Slide 1",
       "tipe": "pembuka",
+      "layout": "pembuka",
       "ringkasan": "Pengantar singkat dan pemantik rasa ingin tahu siswa.",
       "poinUtama": ["Poin 1", "Poin 2", "Poin 3"],
-      "visualIde": "Ilustrasi atau bagan pengantar yang disarankan",
+      "diagramLangkah": [],
+      "perbandingan": null,
+      "visualIde": "Ilustrasi atau bagan pengantar",
       "catatanGuru": "Apa yang guru jelaskan/tanyakan saat slide ini tampil",
-      "pertanyaanInteraktif": "Pertanyaan pemantik untuk kelas"
+      "pertanyaanInteraktif": "Pertanyaan pemantik untuk kelas",
+      "jawabanInteraktif": "Arah jawaban atau poin diskusi yang diharapkan"
     }
   ]
 }`;
 }
+
 
