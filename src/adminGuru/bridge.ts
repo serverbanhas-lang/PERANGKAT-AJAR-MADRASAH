@@ -8,8 +8,13 @@ import type {
   GradeWeights,
   JournalItem,
   KelasItem,
+  LearningMediaItem,
   LegacyAppState,
   LegacyUnit,
+  MediaPembelajaranJenis,
+  MediaSlideItem,
+  MediaSlideTipe,
+  QuizQuestion,
   StudentGradeRow,
   StudentItem,
   TingkatKelas,
@@ -38,6 +43,7 @@ export function getDefaultAdminGuruState(): AdminGuruState {
     journals: [],
     grades: {},
     quizzes: [],
+    mediaPembelajaran: [],
   };
 }
 
@@ -75,6 +81,13 @@ export function normalizeAdminGuruState(raw: unknown): AdminGuruState {
   const grades: Record<string, GradeBookData> =
     src.grades && typeof src.grades === 'object' ? { ...src.grades } : {};
   const quizzes = Array.isArray(src.quizzes) ? src.quizzes.map((q) => ({ ...q })) : [];
+  const mediaPembelajaran = Array.isArray(src.mediaPembelajaran)
+    ? src.mediaPembelajaran.map((m) => ({
+        ...m,
+        slides: Array.isArray(m?.slides) ? m.slides.map((sl) => ({ ...sl })) : [],
+        glosarium: Array.isArray(m?.glosarium) ? m.glosarium.map((g) => ({ ...g })) : [],
+      }))
+    : [];
 
   return {
     classes,
@@ -83,6 +96,7 @@ export function normalizeAdminGuruState(raw: unknown): AdminGuruState {
     journals,
     grades,
     quizzes,
+    mediaPembelajaran,
   };
 }
 
@@ -204,9 +218,12 @@ export interface BahanAjarSource {
   unitId: string;
   meetingNumber: number;
   smt: 1 | 2;
+  jp: number;
   judul: string;
   tpLabel: string;
+  kbcTema: string;
   hasDeepContent: boolean;
+  hasDeepBahanAjar: boolean;
   plainText: string;
 }
 
@@ -236,8 +253,32 @@ export function serializeUnitBahanAjar(unit: LegacyUnit, idx: number, tpLabel: s
       chunks.push(`Contoh Penerapan:\n- ${d.contoh_penerapan.join('\n- ')}`);
     }
     if (d.integrasi_kbc) chunks.push(`Integrasi Kurikulum Berbasis Cinta:\n${d.integrasi_kbc}`);
+    if (Array.isArray(d.miskonsepsi) && d.miskonsepsi.length) {
+      chunks.push(
+        `Miskonsepsi & Klarifikasi:\n${d.miskonsepsi
+          .map((m) => `- Keliru: ${m.keliru || ''} -> Klarifikasi: ${m.klarifikasi || ''}`)
+          .join('\n')}`
+      );
+    }
     if (Array.isArray(d.rangkuman) && d.rangkuman.length) {
       chunks.push(`Rangkuman:\n- ${d.rangkuman.join('\n- ')}`);
+    }
+    if (Array.isArray(d.glosarium) && d.glosarium.length) {
+      chunks.push(
+        `Glosarium:\n${d.glosarium
+          .map((g) => `- ${g.istilah || ''}: ${g.makna || ''}`)
+          .join('\n')}`
+      );
+    }
+    if (Array.isArray(d.refleksi) && d.refleksi.length) {
+      chunks.push(`Refleksi:\n- ${d.refleksi.join('\n- ')}`);
+    }
+    if (Array.isArray(d.latihan) && d.latihan.length) {
+      chunks.push(
+        `Latihan:\n${d.latihan
+          .map((l, li) => `${li + 1}. ${l.pertanyaan || ''} (${l.jenis || 'Latihan'})`)
+          .join('\n')}`
+      );
     }
   }
 
@@ -248,9 +289,13 @@ export function serializeUnitBahanAjar(unit: LegacyUnit, idx: number, tpLabel: s
   if (chunks.length === 0) {
     if (unit.pokok) chunks.push(`Materi Pokok: ${unit.pokok}`);
     if (unit.subMateri) chunks.push(`Submateri: ${unit.subMateri}`);
+    if (tpLabel) chunks.push(`Tujuan Pembelajaran: ${tpLabel}`);
     if (unit.ringkasan) chunks.push(`Ringkasan:\n${unit.ringkasan}`);
     if (unit.rincian) chunks.push(`Rincian Materi:\n${unit.rincian}`);
+    if (unit.pemantik) chunks.push(`Pertanyaan Pemantik:\n${unit.pemantik}`);
     if (unit.kegiatan) chunks.push(`Kegiatan Pembelajaran:\n${unit.kegiatan}`);
+    if (unit.media) chunks.push(`Rekomendasi Media:\n${unit.media}`);
+    if (unit.kbc) chunks.push(`Tema KBC: ${unit.kbc}`);
   }
 
   if (chunks.length === 0) {
@@ -269,20 +314,23 @@ export function getBahanAjarSources(state: LegacyAppState | null): BahanAjarSour
     const tp = tps.find((t) => t.id === u.tpId);
     const tpLabel = tp ? (api ? api.tpText(tp) : tp.lingkup || '') : '';
     const d = u.bahanAjar || {};
-    const hasDeepContent = Boolean(
+    const hasDeepBahanAjar = Boolean(
       u.bahanAjarTeks ||
         d.judul ||
         d.pengantar ||
-        (d.uraian && d.uraian.length > 0) ||
-        unitHasText(u)
+        (d.uraian && d.uraian.length > 0)
     );
+    const hasDeepContent = Boolean(hasDeepBahanAjar || unitHasText(u));
     return {
       unitId: u.id,
       meetingNumber: idx + 1,
       smt: Number(u.smt) === 2 ? 2 : 1,
+      jp: Number(u.jp) || 2,
       judul: d.judul || u.pokok || `Pertemuan ${idx + 1}`,
       tpLabel,
+      kbcTema: u.kbc || tp?.kbc || '',
       hasDeepContent,
+      hasDeepBahanAjar,
       plainText: serializeUnitBahanAjar(u, idx, tpLabel),
     };
   });
@@ -760,3 +808,433 @@ export function exportGradesXlsx(params: {
   XLSX.utils.book_append_sheet(wb, ws, 'Daftar Nilai');
   XLSX.writeFile(wb, `Daftar_Nilai_${kelasNama}_${mapel.replace(/[^A-Za-z0-9_-]/g, '_')}.xlsx`);
 }
+
+// ======================= CLIPBOARD, PROMPT & AI JSON HELPERS =======================
+
+export async function copyTextToClipboard(text: string): Promise<boolean> {
+  if (!text) return false;
+  if (typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      // fallback below
+    }
+  }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    ta.style.top = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    ta.setSelectionRange(0, text.length);
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
+export function extractJsonFromAiOutput(raw: string): unknown {
+  const trimmed = String(raw || '').trim();
+  if (!trimmed) {
+    throw new Error('Teks JSON masih kosong. Tempelkan hasil JSON dari Gemini atau ChatGPT terlebih dahulu.');
+  }
+
+  // Hapus markdown code fence jika ada (```json ... ```)
+  const fenceMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = (fenceMatch ? fenceMatch[1] : trimmed).trim();
+
+  try {
+    return JSON.parse(candidate);
+  } catch {
+    // Cari blok JSON pertama {...} atau [...] jika AI menambahkan kalimat pengantar/penutup
+    const objStart = candidate.indexOf('{');
+    const objEnd = candidate.lastIndexOf('}');
+    const arrStart = candidate.indexOf('[');
+    const arrEnd = candidate.lastIndexOf(']');
+
+    let slice = '';
+    if (arrStart !== -1 && arrEnd > arrStart && (objStart === -1 || arrStart < objStart)) {
+      slice = candidate.slice(arrStart, arrEnd + 1);
+    } else if (objStart !== -1 && objEnd > objStart) {
+      slice = candidate.slice(objStart, objEnd + 1);
+    }
+
+    if (slice) {
+      try {
+        return JSON.parse(slice);
+      } catch {
+        // lanjut lempar pesan ramah
+      }
+    }
+    throw new Error(
+      'Format JSON tidak dapat dibaca. Pastikan seluruh blok JSON { ... } atau [ ... ] tersalin utuh dari Gemini/ChatGPT tanpa terpotong.'
+    );
+  }
+}
+
+function normalizeLetterIndex(val: unknown, optionCount: number): number {
+  if (typeof val === 'number' && !Number.isNaN(val)) {
+    // Jika 1..5 dan bukan 0, atau 0..4: tetap dukung 0-based standar, kecuali huruf
+    return Math.max(0, Math.min(Math.max(0, optionCount - 1), Math.floor(val)));
+  }
+  const s = String(val ?? '').trim().toUpperCase();
+  const letterIdx = ['A', 'B', 'C', 'D', 'E'].indexOf(s.charAt(0));
+  if (letterIdx >= 0 && letterIdx < optionCount) return letterIdx;
+  const numVal = Number(s);
+  if (!Number.isNaN(numVal)) {
+    return Math.max(0, Math.min(Math.max(0, optionCount - 1), Math.floor(numVal)));
+  }
+  return 0;
+}
+
+export function parseImportedQuizJson(raw: string): {
+  questions: QuizQuestion[];
+  judul?: string;
+  durationMinutes?: number;
+} {
+  const parsed = extractJsonFromAiOutput(raw);
+  const root =
+    parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+
+  const rawList: unknown[] = Array.isArray(parsed)
+    ? parsed
+    : Array.isArray(root?.questions)
+      ? root.questions
+      : Array.isArray(root?.soal)
+        ? root.soal
+        : Array.isArray(root?.items)
+          ? root.items
+          : [];
+
+  if (rawList.length === 0) {
+    throw new Error(
+      'JSON tidak berisi daftar soal ("questions"). Pastikan format JSON memiliki array "questions": [ ... ].'
+    );
+  }
+
+  const questions: QuizQuestion[] = rawList
+    .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'))
+    .map((q, idx) => {
+      const rawType = String(q.type || q.tipe || q.jenis || 'pg').toLowerCase();
+      const isEssay =
+        rawType.includes('esai') ||
+        rawType.includes('essay') ||
+        rawType.includes('uraian') ||
+        rawType.includes('isian');
+
+      let opts: string[] = [];
+      const rawOpts = q.options ?? q.opsi ?? q.pilihan ?? q.choices;
+      if (Array.isArray(rawOpts)) {
+        opts = rawOpts.map((o) => String(o ?? '').trim()).filter(Boolean);
+      } else if (rawOpts && typeof rawOpts === 'object') {
+        const obj = rawOpts as Record<string, unknown>;
+        opts = ['A', 'B', 'C', 'D', 'E']
+          .map((k) => obj[k] ?? obj[k.toLowerCase()])
+          .filter((v) => v !== undefined && String(v).trim() !== '')
+          .map((v) => String(v).trim());
+      } else {
+        opts = ['a', 'b', 'c', 'd', 'e']
+          .map((k) => q[k] ?? q[k.toUpperCase()])
+          .filter((v) => v !== undefined && String(v).trim() !== '')
+          .map((v) => String(v).trim());
+      }
+
+      const questionText = String(q.question || q.pertanyaan || q.soal || q.stem || '').trim();
+      const rawAnswer = q.correctAnswerIndex ?? q.kunci ?? q.jawaban ?? q.correctAnswer ?? 0;
+
+      return {
+        id: createUid(`q_${idx}`),
+        type: (isEssay ? 'esai' : 'pg') as QuizQuestion['type'],
+        question: questionText,
+        options: isEssay ? [] : opts.length >= 2 ? opts : ['Opsi A', 'Opsi B', 'Opsi C', 'Opsi D'],
+        correctAnswerIndex: isEssay ? 0 : normalizeLetterIndex(rawAnswer, opts.length || 4),
+        explanation: String(q.explanation || q.pembahasan || '').trim(),
+        essayRubric: String(q.essayRubric || q.rubrik || q.kunciEsai || '').trim(),
+        points: Number(q.points ?? q.poin ?? q.skor) > 0 ? Number(q.points ?? q.poin ?? q.skor) : isEssay ? 20 : 10,
+      };
+    })
+    .filter((q) => q.question.length > 0);
+
+  if (questions.length === 0) {
+    throw new Error('Tidak ditemukan pertanyaan valid di dalam JSON. Periksa field "question" pada setiap soal.');
+  }
+
+  return {
+    questions,
+    judul: root?.judul ? String(root.judul).trim() : undefined,
+    durationMinutes:
+      Number(root?.durationMinutes ?? root?.durasi) > 0
+        ? Number(root?.durationMinutes ?? root?.durasi)
+        : undefined,
+  };
+}
+
+const VALID_SLIDE_TYPES: MediaSlideTipe[] = [
+  'pembuka',
+  'tujuan',
+  'konsep',
+  'uraian',
+  'contoh',
+  'visual',
+  'kbc',
+  'kuis-cepat',
+  'refleksi',
+  'rangkuman',
+];
+
+export function normalizeMediaPayload(
+  rawObj: unknown,
+  defaults: {
+    judul?: string;
+    jenis?: MediaPembelajaranJenis;
+    mapel?: string;
+    kelasId?: string;
+    kelasLabel?: string;
+    unitId?: string;
+    tpLabel?: string;
+    durasiMenit?: number;
+  } = {}
+): LearningMediaItem {
+  const parsed = rawObj as Record<string, unknown>;
+  const root =
+    parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? ((parsed.media && typeof parsed.media === 'object' ? parsed.media : parsed) as Record<
+          string,
+          unknown
+        >)
+      : null;
+
+  const rawSlides: unknown[] = Array.isArray(parsed)
+    ? parsed
+    : Array.isArray(root?.slides)
+      ? root.slides
+      : Array.isArray(root?.kartu)
+        ? root.kartu
+        : Array.isArray(root?.bagian)
+          ? root.bagian
+          : [];
+
+  if (rawSlides.length === 0) {
+    throw new Error(
+      'JSON belum berisi daftar slide/kartu ("slides"). Pastikan format JSON memuat array "slides": [ ... ].'
+    );
+  }
+
+  const slides: MediaSlideItem[] = rawSlides
+    .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'))
+    .map((sl, idx) => {
+      const rawTipe = String(sl.tipe || sl.type || 'uraian').toLowerCase().trim() as MediaSlideTipe;
+      const tipe: MediaSlideTipe = VALID_SLIDE_TYPES.includes(rawTipe) ? rawTipe : 'uraian';
+      const rawBullets = sl.poinUtama ?? sl.poin ?? sl.bullets ?? sl.points;
+      const poinUtama = Array.isArray(rawBullets)
+        ? rawBullets.map((b) => String(b ?? '').trim()).filter(Boolean)
+        : typeof rawBullets === 'string' && rawBullets.trim()
+          ? rawBullets
+              .split(/\r?\n/)
+              .map((line) => line.replace(/^[-•*]\s*/, '').trim())
+              .filter(Boolean)
+          : [];
+
+      return {
+        id: createUid(`sl_${idx}`),
+        judulSlide: String(sl.judulSlide || sl.judul || sl.title || `Slide ${idx + 1}`).trim(),
+        tipe,
+        ringkasan: String(sl.ringkasan || sl.narasi || sl.isi || sl.content || '').trim(),
+        poinUtama,
+        visualIde: String(sl.visualIde || sl.visual || sl.ilustrasi || sl.diagram || '').trim(),
+        catatanGuru: String(sl.catatanGuru || sl.catatan || sl.speakerNotes || '').trim(),
+        pertanyaanInteraktif: String(
+          sl.pertanyaanInteraktif || sl.pertanyaan || sl.cekPemahaman || ''
+        ).trim(),
+      };
+    });
+
+  const rawGlos = root?.glosarium;
+  const glosarium = Array.isArray(rawGlos)
+    ? rawGlos
+        .filter((g): g is Record<string, unknown> => Boolean(g && typeof g === 'object'))
+        .map((g) => ({
+          istilah: String(g.istilah || g.term || '').trim(),
+          makna: String(g.makna || g.arti || g.definition || '').trim(),
+        }))
+        .filter((g) => g.istilah && g.makna)
+    : [];
+
+  const now = new Date().toISOString();
+  return {
+    id: createUid('med'),
+    judul: String(root?.judul || root?.title || defaults.judul || 'Media Pembelajaran Interaktif').trim(),
+    subjudul: String(root?.subjudul || root?.subtitle || '').trim(),
+    jenis: (['slide-presentasi', 'peta-konsep', 'kartu-ajar', 'studi-kasus'].includes(
+      String(root?.jenis || '')
+    )
+      ? String(root?.jenis)
+      : defaults.jenis || 'slide-presentasi') as MediaPembelajaranJenis,
+    mapel: String(defaults.mapel || root?.mapel || 'Mata Pelajaran').trim(),
+    kelasId: String(defaults.kelasId || ''),
+    kelasLabel: String(defaults.kelasLabel || ''),
+    unitId: defaults.unitId,
+    materiJudul: defaults.judul,
+    tujuanPembelajaran: String(
+      root?.tujuanPembelajaran || root?.tujuan || defaults.tpLabel || ''
+    ).trim(),
+    integrasiKbc: String(root?.integrasiKbc || root?.integrasi_kbc || root?.kbc || '').trim(),
+    aktivitasKelas: String(root?.aktivitasKelas || root?.aktivitas || '').trim(),
+    durasiMenit: Number(defaults.durasiMenit || root?.durasiMenit || 45) || 45,
+    createdAt: now,
+    updatedAt: now,
+    slides,
+    glosarium,
+  };
+}
+
+export function parseImportedMediaJson(
+  raw: string,
+  defaults: {
+    judul?: string;
+    jenis?: MediaPembelajaranJenis;
+    mapel?: string;
+    kelasId?: string;
+    kelasLabel?: string;
+    unitId?: string;
+    tpLabel?: string;
+    durasiMenit?: number;
+  } = {}
+): LearningMediaItem {
+  const parsed = extractJsonFromAiOutput(raw);
+  return normalizeMediaPayload(parsed, defaults);
+}
+
+export function buildQuizExternalPrompt(params: {
+  materiText: string;
+  judul: string;
+  mapel: string;
+  kelas: string;
+  tp: string;
+  jumlahPG: number;
+  jumlahEsai: number;
+  tingkatKesulitan: string;
+}): string {
+  return `Anda adalah guru profesional Madrasah Aliyah dan pembuat asesmen pembelajaran mendalam.
+Buatlah soal kuis interaktif berdasarkan BAHAN AJAR MENDALAM di bawah ini.
+
+IDENTITAS KUIS:
+- Judul Kuis: ${params.judul || 'Kuis Pembelajaran'}
+- Mata Pelajaran: ${params.mapel || '-'}
+- Kelas: ${params.kelas || '-'}
+- Tujuan Pembelajaran: ${params.tp || '-'}
+- Tingkat Kesulitan: ${params.tingkatKesulitan}
+
+BAHAN AJAR MENDALAM (SUMBER UTAMA):
+${String(params.materiText || '').slice(0, 16000)}
+
+ATURAN SOAL:
+1. Buat tepat ${params.jumlahPG} soal Pilihan Ganda ("type": "pg") dengan 4 atau 5 opsi jawaban pada array "options". Isi "correctAnswerIndex" dengan indeks angka dimulai dari 0 (0=A, 1=B, 2=C, 3=D, 4=E). Sertakan "explanation" (pembahasan singkat).
+2. Buat tepat ${params.jumlahEsai} soal Esai/Uraian ("type": "esai") dengan "options": [], "correctAnswerIndex": 0, dan isi "essayRubric" dengan rubrik/kunci penilaian singkat.
+3. Isi "points": 10 untuk PG dan 20 untuk Esai.
+4. Seluruh soal harus akurat dan merujuk pada bahan ajar di atas.
+
+KELUARAN WAJIB:
+Kembalikan HANYA JSON valid (tanpa teks pengantar/penutup atau markdown) dengan struktur persis seperti berikut:
+{
+  "judul": "${(params.judul || 'Kuis Pembelajaran').replace(/"/g, '\\"')}",
+  "questions": [
+    {
+      "type": "pg",
+      "question": "Pertanyaan pilihan ganda...",
+      "options": ["Opsi A", "Opsi B", "Opsi C", "Opsi D"],
+      "correctAnswerIndex": 0,
+      "explanation": "Pembahasan singkat jawaban benar.",
+      "essayRubric": "",
+      "points": 10
+    },
+    {
+      "type": "esai",
+      "question": "Pertanyaan uraian/HOTS...",
+      "options": [],
+      "correctAnswerIndex": 0,
+      "explanation": "",
+      "essayRubric": "Poin kunci jawaban esai yang diharapkan.",
+      "points": 20
+    }
+  ]
+}`;
+}
+
+export function buildMediaExternalPrompt(params: {
+  materiText: string;
+  judul: string;
+  mapel: string;
+  kelas: string;
+  tp: string;
+  kbc: string;
+  jenisMedia: MediaPembelajaranJenis;
+  jumlahSlide: number;
+}): string {
+  const jenisMap: Record<MediaPembelajaranJenis, string> = {
+    'slide-presentasi': 'Slide Presentasi Mengajar di Kelas / Proyektor',
+    'peta-konsep': 'Peta Konsep & Alur Pemahaman Bertahap',
+    'kartu-ajar': 'Kartu Ajar Interaktif & Flashcard Konsep',
+    'studi-kasus': 'Media Studi Kasus, Masalah Kontekstual & Diskusi Kelompok',
+  };
+
+  return `Anda adalah desainer media pembelajaran interaktif Madrasah Aliyah berbasis Pembelajaran Mendalam & Kurikulum Berbasis Cinta (KBC).
+Ubah BAHAN AJAR MENDALAM berikut menjadi media pembelajaran siap tayang di kelas.
+
+IDENTITAS MEDIA:
+- Judul Media: ${params.judul || 'Media Pembelajaran'}
+- Bentuk Media: ${jenisMap[params.jenisMedia] || params.jenisMedia}
+- Mata Pelajaran: ${params.mapel || '-'}
+- Kelas: ${params.kelas || '-'}
+- Tujuan Pembelajaran: ${params.tp || '-'}
+- Tema Kurikulum Berbasis Cinta (KBC): ${params.kbc || '-'}
+- Target Jumlah Slide/Kartu: ${params.jumlahSlide} slide/kartu
+
+BAHAN AJAR MENDALAM (SUMBER UTAMA):
+${String(params.materiText || '').slice(0, 16000)}
+
+INSTRUKSI PENYUSUNAN:
+1. Susun tepat ${params.jumlahSlide} slide/kartu yang runtut: mulai dari pembuka & pemantik, tujuan belajar, konsep kunci, uraian materi inti, contoh penerapan nyata, integrasi KBC, kuis cepat/cek pemahaman, hingga refleksi & rangkuman.
+2. Pada setiap slide sertakan:
+   - "judulSlide": judul singkat & menarik
+   - "tipe": salah satu dari ("pembuka" | "tujuan" | "konsep" | "uraian" | "contoh" | "visual" | "kbc" | "kuis-cepat" | "refleksi" | "rangkuman")
+   - "ringkasan": narasi singkat 2-4 kalimat yang mudah dipahami siswa di layar
+   - "poinUtama": array 3-5 poin ringkas padat (bukan paragraf panjang)
+   - "visualIde": saran konkret bagan/diagram/tabel/ilustrasi visual untuk ditampilkan atau digambar guru
+   - "catatanGuru": panduan lisan atau langkah fasilitasi guru saat menayangkan slide ini
+   - "pertanyaanInteraktif": 1 pertanyaan diskusi singkat untuk mengajak siswa aktif (boleh kosong jika tidak perlu)
+3. Sertakan "glosarium" istilah penting dan "aktivitasKelas" singkat.
+
+KELUARAN WAJIB:
+Kembalikan HANYA JSON valid (tanpa teks pengantar atau markdown) dengan struktur persis berikut:
+{
+  "judul": "${(params.judul || 'Media Pembelajaran').replace(/"/g, '\\"')}",
+  "subjudul": "Subjudul singkat media pembelajaran",
+  "tujuanPembelajaran": "Tujuan pembelajaran ringkas",
+  "integrasiKbc": "Keterkaitan materi dengan nilai Kurikulum Berbasis Cinta",
+  "aktivitasKelas": "Saran aktivitas interaktif siswa menggunakan media ini",
+  "glosarium": [
+    { "istilah": "Istilah 1", "makna": "Penjelasan singkat istilah" }
+  ],
+  "slides": [
+    {
+      "judulSlide": "Judul Slide 1",
+      "tipe": "pembuka",
+      "ringkasan": "Pengantar singkat dan pemantik rasa ingin tahu siswa.",
+      "poinUtama": ["Poin 1", "Poin 2", "Poin 3"],
+      "visualIde": "Ilustrasi atau bagan pengantar yang disarankan",
+      "catatanGuru": "Apa yang guru jelaskan/tanyakan saat slide ini tampil",
+      "pertanyaanInteraktif": "Pertanyaan pemantik untuk kelas"
+    }
+  ]
+}`;
+}
+

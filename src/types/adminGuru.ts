@@ -106,6 +106,55 @@ export interface QuizItem {
   syncedToGradeAt?: string;
 }
 
+export type MediaPembelajaranJenis =
+  | 'slide-presentasi'
+  | 'peta-konsep'
+  | 'kartu-ajar'
+  | 'studi-kasus';
+
+export type MediaSlideTipe =
+  | 'pembuka'
+  | 'tujuan'
+  | 'konsep'
+  | 'uraian'
+  | 'contoh'
+  | 'visual'
+  | 'kbc'
+  | 'kuis-cepat'
+  | 'refleksi'
+  | 'rangkuman';
+
+export interface MediaSlideItem {
+  id: string;
+  judulSlide: string;
+  tipe: MediaSlideTipe;
+  ringkasan: string;
+  poinUtama: string[];
+  visualIde: string;
+  catatanGuru: string;
+  pertanyaanInteraktif?: string;
+}
+
+export interface LearningMediaItem {
+  id: string;
+  judul: string;
+  subjudul?: string;
+  jenis: MediaPembelajaranJenis;
+  mapel: string;
+  kelasId: string;
+  kelasLabel: string;
+  unitId?: string;
+  materiJudul?: string;
+  tujuanPembelajaran?: string;
+  integrasiKbc?: string;
+  aktivitasKelas?: string;
+  durasiMenit: number;
+  createdAt: string;
+  updatedAt: string;
+  slides: MediaSlideItem[];
+  glosarium?: Array<{ istilah: string; makna: string }>;
+}
+
 export interface AdminGuruState {
   classes: KelasItem[];
   students: StudentItem[];
@@ -115,6 +164,7 @@ export interface AdminGuruState {
   // key: `${kelasId}::${mapelKey}`
   grades: Record<string, GradeBookData>;
   quizzes: QuizItem[];
+  mediaPembelajaran: LearningMediaItem[];
 }
 
 export interface LegacyIdentitas {

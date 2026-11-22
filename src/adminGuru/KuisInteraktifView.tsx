@@ -1,18 +1,26 @@
 import React, { useMemo, useState } from 'react';
 import {
+  AlertCircle,
   BookOpenCheck,
   Check,
+  ClipboardPaste,
   Copy,
+  Download,
   Eye,
+  FileText,
   Globe,
   Lock,
   Plus,
   RefreshCw,
+  Share2,
   Sparkles,
   Trash2,
   Unlock,
+  Upload,
 } from 'lucide-react';
 import {
+  buildQuizExternalPrompt,
+  copyTextToClipboard,
   createEmptyGradeRow,
   createUid,
   DEFAULT_WEIGHTS,
@@ -22,14 +30,48 @@ import {
   getBahanAjarSources,
   getDynamicTPs,
   getLegacyState,
+  parseImportedQuizJson,
   updateAdminGuruState,
 } from './bridge';
 import { StudentQuizView } from './StudentQuizView';
 import type { QuizItem, QuizQuestion, QuizSubmission } from '../types/adminGuru';
 
+const SAMPLE_QUIZ_JSON = `{
+  "judul": "Kuis Pemahaman Materi",
+  "questions": [
+    {
+      "type": "pg",
+      "question": "Apa tujuan utama mempelajari materi ini dalam kehidupan sehari-hari?",
+      "options": [
+        "Memahami konsep secara mendalam dan mengamalkannya",
+        "Menghafal istilah tanpa memahami maknanya",
+        "Mengabaikan nilai akhlak dalam belajar",
+        "Menyalin catatan tanpa berdiskusi"
+      ],
+      "correctAnswerIndex": 0,
+      "explanation": "Pembelajaran mendalam menekankan pemahaman konsep dan pengamalan nyata.",
+      "essayRubric": "",
+      "points": 10
+    },
+    {
+      "type": "esai",
+      "question": "Jelaskan satu contoh penerapan materi ini di lingkungan madrasah beserta alasannya!",
+      "options": [],
+      "correctAnswerIndex": 0,
+      "explanation": "",
+      "essayRubric": "Menyebutkan contoh konkret (10 poin) dan alasan yang logis sesuai materi (10 poin).",
+      "points": 20
+    }
+  ]
+}`;
+
 export const KuisInteraktifView: React.FC = () => {
   const [adminState, setAdminState] = useState(() => getAdminGuruState());
-  const legacy = getLegacyState();
+  const [dbTick, setDbTick] = useState(0);
+  const legacy = useMemo(() => {
+    void dbTick;
+    return getLegacyState();
+  }, [dbTick]);
   const api = getAppApi();
 
   const bahanSources = useMemo(() => getBahanAjarSources(legacy), [legacy]);
@@ -58,12 +100,24 @@ export const KuisInteraktifView: React.FC = () => {
   const [kesulitan, setKesulitan] = useState<string>('Campuran (LOTS & HOTS)');
   const [durasi, setDurasi] = useState<number>(25);
 
+  // Mode Input: AI Langsung vs Salin Prompt & Tempel JSON
+  const [creatorMode, setCreatorMode] = useState<'ai' | 'prompt-json'>('ai');
   const [generating, setGenerating] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
+  const [pastedJson, setPastedJson] = useState('');
+  const [jsonError, setJsonError] = useState<string | null>(null);
+  const [showPromptPreview, setShowPromptPreview] = useState(false);
+
   const [publishing, setPublishing] = useState(false);
   const [fetchingScores, setFetchingScores] = useState(false);
   const [previewCode, setPreviewCode] = useState<string | null>(null);
   const [editingEssaySub, setEditingEssaySub] = useState<QuizSubmission | null>(null);
   const [essayScoresDraft, setEssayScoresDraft] = useState<Record<string, number>>({});
+
+  const selectedSource = useMemo(
+    () => bahanSources.find((b) => b.unitId === selectedUnitId),
+    [bahanSources, selectedUnitId]
+  );
 
   const activeQuiz: QuizItem | undefined = useMemo(
     () => adminState.quizzes.find((q) => q.id === selectedQuizId),
@@ -79,9 +133,85 @@ export const KuisInteraktifView: React.FC = () => {
     }
   };
 
+  const handleRefreshDatabase = () => {
+    setDbTick((t) => t + 1);
+    const latest = getLegacyState();
+    const latestSources = getBahanAjarSources(latest);
+    const target = latestSources.find((b) => b.unitId === selectedUnitId) || latestSources[0];
+    if (target) {
+      setSelectedUnitId(target.unitId);
+      setCustomMateriText(target.plainText);
+      setJudulKuis(`Kuis: ${target.judul}`);
+      api?.toast(`Materi "${target.judul}" berhasil ditarik ulang dari database.`);
+    } else {
+      api?.toast('Belum ada data materi pada menu ATP & Bahan Ajar Mendalam.');
+    }
+  };
+
+  const externalQuizPrompt = useMemo(() => {
+    const kelasObj = adminState.classes.find((c) => c.id === selectedKelasId);
+    const tpObj = dynamicTPs.find((t) => t.key === selectedTpKey);
+    return buildQuizExternalPrompt({
+      materiText: customMateriText,
+      judul: judulKuis,
+      mapel: selectedMapel,
+      kelas: kelasObj ? `${kelasObj.nama} (Kelas ${kelasObj.tingkat})` : '',
+      tp: tpObj?.fullText || '',
+      jumlahPG,
+      jumlahEsai,
+      tingkatKesulitan: kesulitan,
+    });
+  }, [
+    adminState.classes,
+    customMateriText,
+    dynamicTPs,
+    jumlahEsai,
+    jumlahPG,
+    judulKuis,
+    kesulitan,
+    selectedKelasId,
+    selectedMapel,
+    selectedTpKey,
+  ]);
+
+  const saveQuizWithQuestions = (
+    questions: QuizQuestion[],
+    overrideJudul?: string,
+    overrideDuration?: number
+  ) => {
+    const kelasObj = adminState.classes.find((c) => c.id === selectedKelasId);
+    const tpObj = dynamicTPs.find((t) => t.key === selectedTpKey);
+    const newId = createUid('quiz');
+    const newQuiz: QuizItem = {
+      id: newId,
+      code: '',
+      judul: (overrideJudul || judulKuis).trim() || 'Kuis Interaktif',
+      mapel: selectedMapel,
+      kelasId: selectedKelasId,
+      kelasLabel: kelasObj?.nama || '',
+      unitId: selectedUnitId || undefined,
+      tpKey: selectedTpKey,
+      tpLabel: tpObj?.shortLabel || selectedTpKey.toUpperCase(),
+      durationMinutes: overrideDuration || durasi,
+      isOpen: true,
+      questions,
+      submissions: [],
+    };
+
+    const updated = updateAdminGuruState((prev) => ({
+      ...prev,
+      quizzes: [newQuiz, ...prev.quizzes],
+    }));
+    setAdminState(updated);
+    setSelectedQuizId(newId);
+  };
+
   const handleGenerateQuestions = async () => {
+    setAiError(null);
     if (!customMateriText.trim()) {
-      api?.toast('Pilih Bahan Ajar Mendalam atau isi teks materi terlebih dahulu.');
+      const msg = 'Pilih Bahan Ajar Mendalam atau isi teks materi terlebih dahulu.';
+      setAiError(msg);
+      api?.toast(msg);
       return;
     }
     setGenerating(true);
@@ -112,34 +242,87 @@ export const KuisInteraktifView: React.FC = () => {
         throw new Error('AI tidak menghasilkan soal. Coba ulangi dengan teks bahan ajar yang lebih jelas.');
       }
 
-      const newId = createUid('quiz');
-      const newQuiz: QuizItem = {
-        id: newId,
-        code: '',
-        judul: judulKuis.trim() || 'Kuis Interaktif',
-        mapel: selectedMapel,
-        kelasId: selectedKelasId,
-        kelasLabel: kelasObj?.nama || '',
-        unitId: selectedUnitId || undefined,
-        tpKey: selectedTpKey,
-        tpLabel: tpObj?.shortLabel || selectedTpKey.toUpperCase(),
-        durationMinutes: durasi,
-        isOpen: true,
-        questions,
-        submissions: [],
-      };
-
-      const updated = updateAdminGuruState((prev) => ({
-        ...prev,
-        quizzes: [newQuiz, ...prev.quizzes],
-      }));
-      setAdminState(updated);
-      setSelectedQuizId(newId);
+      saveQuizWithQuestions(questions);
       api?.toast(`Berhasil men-generate ${questions.length} soal kuis dari Bahan Ajar!`);
     } catch (err) {
-      api?.toast(err instanceof Error ? err.message : 'Gagal membuat soal dengan AI.');
+      const msg = err instanceof Error ? err.message : 'Gagal membuat soal dengan AI.';
+      setAiError(msg);
+      api?.toast(msg);
     } finally {
       setGenerating(false);
+    }
+  };
+
+  const handleCopyPrompt = async () => {
+    if (!customMateriText.trim()) {
+      api?.toast('Pilih Bahan Ajar Mendalam atau isi teks materi terlebih dahulu.');
+      return;
+    }
+    const ok = await copyTextToClipboard(externalQuizPrompt);
+    if (ok) {
+      api?.toast('Prompt soal tersalin! Tempel ke Gemini atau ChatGPT, lalu tempel JSON hasilnya di sini.');
+    } else {
+      setShowPromptPreview(true);
+      api?.toast('Salin prompt dari kotak pratinjau di bawah.');
+    }
+  };
+
+  const handleDownloadPromptTxt = () => {
+    const blob = new Blob([externalQuizPrompt], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `Prompt_Kuis_${(judulKuis || 'Soal').replace(/[^A-Za-z0-9_-]/g, '_')}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => {
+      URL.revokeObjectURL(url);
+      a.remove();
+    }, 300);
+  };
+
+  const handleImportQuizJson = (mode: 'new' | 'append') => {
+    setJsonError(null);
+    try {
+      const parsed = parseImportedQuizJson(pastedJson);
+      if (mode === 'append' && activeQuiz) {
+        mutateActiveQuiz((q) => ({
+          ...q,
+          questions: [...q.questions, ...parsed.questions],
+        }));
+        setPastedJson('');
+        api?.toast(`${parsed.questions.length} soal berhasil ditambahkan ke "${activeQuiz.judul}".`);
+      } else {
+        saveQuizWithQuestions(parsed.questions, parsed.judul, parsed.durationMinutes);
+        setPastedJson('');
+        api?.toast(
+          `Kuis dengan ${parsed.questions.length} soal berhasil dimuat dari JSON! Klik "Publikasikan & Buat Link Siswa" untuk membagikan.`
+        );
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Format JSON soal tidak valid.';
+      setJsonError(msg);
+      api?.toast(msg);
+    }
+  };
+
+  const handleUploadQuizJsonFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      setPastedJson(text);
+      setJsonError(null);
+      const parsed = parseImportedQuizJson(text);
+      saveQuizWithQuestions(parsed.questions, parsed.judul, parsed.durationMinutes);
+      setPastedJson('');
+      api?.toast(`File JSON berhasil diimpor (${parsed.questions.length} soal)!`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Gagal membaca file JSON soal.';
+      setJsonError(msg);
+      api?.toast(msg);
+    } finally {
+      e.target.value = '';
     }
   };
 
@@ -419,12 +602,49 @@ export const KuisInteraktifView: React.FC = () => {
 
   const handleCopyLink = async () => {
     if (!studentLink) return;
-    try {
-      await navigator.clipboard.writeText(studentLink);
+    const ok = await copyTextToClipboard(studentLink);
+    if (ok) {
       api?.toast('Tautan kuis siswa disalin ke clipboard!');
-    } catch {
+    } else {
       api?.toast(`Salin manual tautan ini: ${studentLink}`);
     }
+  };
+
+  const handleCopyInviteMessage = async () => {
+    if (!activeQuiz || !studentLink) return;
+    const msg = `Assalamu'alaikum wr. wb.\nSilakan kerjakan Kuis Interaktif:\n\nJudul: ${activeQuiz.judul}\nMapel: ${activeQuiz.mapel}\nKelas: ${activeQuiz.kelasLabel || '-'}\nDurasi: ${activeQuiz.durationMinutes} menit\nKode Akses: ${activeQuiz.code}\n\nLink Pengerjaan:\n${studentLink}`;
+    const ok = await copyTextToClipboard(msg);
+    api?.toast(
+      ok
+        ? 'Pesan undangan & link kuis tersalin! Siap dibagikan ke grup siswa.'
+        : 'Gagal menyalin otomatis. Gunakan tombol Salin Link.'
+    );
+  };
+
+  const handleExportActiveQuizJson = () => {
+    if (!activeQuiz) return;
+    const payload = JSON.stringify(
+      {
+        judul: activeQuiz.judul,
+        mapel: activeQuiz.mapel,
+        durationMinutes: activeQuiz.durationMinutes,
+        questions: activeQuiz.questions,
+      },
+      null,
+      2
+    );
+    const blob = new Blob([payload], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `Kuis_${activeQuiz.judul.replace(/[^A-Za-z0-9_-]/g, '_')}.json`;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => {
+      URL.revokeObjectURL(url);
+      a.remove();
+    }, 300);
+    api?.toast('File JSON soal kuis diunduh.');
   };
 
   if (previewCode) {
@@ -433,25 +653,38 @@ export const KuisInteraktifView: React.FC = () => {
 
   return (
     <div className="max-w-[1200px] mx-auto space-y-4">
-      {/* Panel 1: Generator Soal AI dari Bahan Ajar Mendalam */}
+      {/* Panel 1: Generator Soal AI / Salin Prompt + Tempel JSON dari Bahan Ajar Mendalam */}
       <div className="panel noprint !max-w-none">
         <div className="flex flex-wrap items-start justify-between gap-3 border-b border-[#e9e4d4] pb-3 mb-4">
           <div>
-            <h2 className="!border-0 !pb-0 !mb-1">Kuis Interaktif (AI / Auto-Generate)</h2>
+            <h2 className="!border-0 !pb-0 !mb-1">Kuis Interaktif (AI &amp; Salin Prompt / JSON)</h2>
             <p className="hint !mb-0">
-              Tarik materi langsung dari <b>Bahan Ajar Mendalam / Konten Materi</b>, buat soal PG &amp; Esai otomatis, bagikan <b>Link / Kode Akses Siswa</b> berbasis web, dan sinkronkan skor ke <b>Nilai Formatif</b>.
+              Tarik materi langsung dari <b>Bahan Ajar Mendalam / Konten Materi</b>, buat soal PG &amp; Esai lewat <b>Generate AI</b> atau <b>Salin Prompt (Gemini / ChatGPT) &amp; Tempel JSON</b>, bagikan <b>Link / Kode Akses Siswa</b>, dan sinkronkan skor ke <b>Nilai Formatif</b>.
             </p>
           </div>
-          <button type="button" className="btn sm" onClick={handleCreateBlankQuiz}>
-            <Plus className="w-4 h-4" />
-            Buat Kuis Manual
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <button type="button" className="btn sm" onClick={handleRefreshDatabase}>
+              <RefreshCw className="w-3.5 h-3.5" />
+              Tarik Ulang Database
+            </button>
+            <button type="button" className="btn sm" onClick={handleCreateBlankQuiz}>
+              <Plus className="w-4 h-4" />
+              Buat Kuis Manual
+            </button>
+          </div>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
           <div className="lg:col-span-5 space-y-3">
             <div>
-              <label className="f">Sumber dari Bahan Ajar Mendalam / Pertemuan</label>
+              <div className="flex items-center justify-between gap-2 mb-1">
+                <label className="f !mb-0">Sumber dari Bahan Ajar Mendalam / Pertemuan</label>
+                {selectedSource && (
+                  <span className={`badge ${selectedSource.hasDeepBahanAjar ? '' : 'hots'}`}>
+                    {selectedSource.hasDeepBahanAjar ? '✓ Materi Mendalam' : 'Ringkasan'}
+                  </span>
+                )}
+              </div>
               <select
                 className="in"
                 value={selectedUnitId}
@@ -463,17 +696,17 @@ export const KuisInteraktifView: React.FC = () => {
                 {bahanSources.map((b) => (
                   <option key={b.unitId} value={b.unitId}>
                     Pertemuan {b.meetingNumber} (Smt {b.smt}): {b.judul}{' '}
-                    {b.hasDeepContent ? '✓' : '(Ringkas)'}
+                    {b.hasDeepBahanAjar ? '✓ Materi Mendalam' : b.hasDeepContent ? '(Konten)' : '(Ringkas)'}
                   </option>
                 ))}
               </select>
             </div>
 
             <div>
-              <label className="f">Isi Teks Bahan Ajar (Bisa Diedit Sebelum Generate)</label>
+              <label className="f">Isi Teks Bahan Ajar (Bisa Diedit Sebelum Diproses)</label>
               <textarea
-                rows={7}
-                className="in text-xs"
+                rows={9}
+                className="in text-xs leading-relaxed"
                 placeholder="Pilih pertemuan di atas atau tempel ringkasan bahan ajar di sini..."
                 value={customMateriText}
                 onChange={(e) => setCustomMateriText(e.target.value)}
@@ -583,19 +816,155 @@ export const KuisInteraktifView: React.FC = () => {
               </div>
             </div>
 
-            <div className="pt-1 flex flex-wrap items-center justify-between gap-2">
-              <span className="text-xs text-[#64736c]">
-                Soal otomatis disusun terstruktur (JSON) lengkap dengan opsi A–E, kunci, dan pembahasan.
-              </span>
-              <button
-                type="button"
-                disabled={generating}
-                onClick={handleGenerateQuestions}
-                className="btn primary"
-              >
-                <Sparkles className="w-4 h-4" />
-                {generating ? 'Menyusun Soal dengan Gemini AI...' : 'Generate Soal Otomatis (AI)'}
-              </button>
+            <div className="rounded-xl border border-[#d9e2d9] bg-[#f8faf5] p-3.5 space-y-3">
+              <div className="flex flex-wrap gap-2 border-b border-[#e2e7dc] pb-2.5">
+                <button
+                  type="button"
+                  onClick={() => setCreatorMode('ai')}
+                  className={`btn sm ${creatorMode === 'ai' ? 'primary' : ''}`}
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  Cara 1: Generate AI Langsung
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCreatorMode('prompt-json')}
+                  className={`btn sm ${creatorMode === 'prompt-json' ? 'primary' : ''}`}
+                >
+                  <ClipboardPaste className="w-3.5 h-3.5" />
+                  Cara 2: Salin Prompt (Gemini / ChatGPT) &amp; Tempel JSON
+                </button>
+              </div>
+
+              {creatorMode === 'ai' ? (
+                <div className="space-y-2.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-xs text-[#64736c]">
+                      Soal otomatis disusun terstruktur (JSON) lengkap dengan opsi A–E, kunci, dan pembahasan.
+                    </span>
+                    <button
+                      type="button"
+                      disabled={generating}
+                      onClick={handleGenerateQuestions}
+                      className="btn primary"
+                    >
+                      <Sparkles className="w-4 h-4" />
+                      {generating ? 'Menyusun Soal dengan Gemini AI...' : 'Generate Soal Otomatis (AI)'}
+                    </button>
+                  </div>
+
+                  {aiError && (
+                    <div className="p-3 rounded-lg bg-[#fbeeed] border border-[#e3b9b6] text-xs text-[#8a1c16] space-y-2">
+                      <div className="flex items-start gap-2">
+                        <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                        <span>{aiError}</span>
+                      </div>
+                      <button
+                        type="button"
+                        className="btn sm"
+                        onClick={() => setCreatorMode('prompt-json')}
+                      >
+                        <ClipboardPaste className="w-3.5 h-3.5" />
+                        Beralih ke Salin Prompt (Gemini / ChatGPT) &amp; Tempel JSON
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div className="text-xs text-[#315449] bg-[#eaf5f3] border border-[#bcd6d2] rounded-lg p-2.5">
+                    <b>Langkah mudah pakai Gemini Web atau ChatGPT:</b> (1) Klik{' '}
+                    <b>Salin Prompt Soal</b>, (2) Tempel &amp; kirim di Gemini/ChatGPT, (3) Salin JSON soal hasilnya ke kotak bawah lalu klik{' '}
+                    <b>Buat Kuis dari JSON</b>. Setelah jadi, kuis langsung bisa dijalankan &amp; dibagikan ke siswa!
+                  </div>
+
+                  <div className="flex flex-wrap gap-2">
+                    <button type="button" className="btn primary sm" onClick={handleCopyPrompt}>
+                      <Copy className="w-3.5 h-3.5" /> Salin Prompt Soal (Gemini / ChatGPT)
+                    </button>
+                    <button type="button" className="btn sm" onClick={handleDownloadPromptTxt}>
+                      <Download className="w-3.5 h-3.5" /> Unduh Prompt (.txt)
+                    </button>
+                    <button
+                      type="button"
+                      className="btn sm"
+                      onClick={() => setShowPromptPreview((v) => !v)}
+                    >
+                      <FileText className="w-3.5 h-3.5" />{' '}
+                      {showPromptPreview ? 'Tutup Pratinjau Prompt' : 'Lihat Prompt'}
+                    </button>
+                  </div>
+
+                  {showPromptPreview && (
+                    <textarea
+                      readOnly
+                      rows={6}
+                      className="in text-[11px] font-mono bg-white"
+                      value={externalQuizPrompt}
+                    />
+                  )}
+
+                  <div>
+                    <div className="flex items-center justify-between gap-2 mb-1">
+                      <label className="f !mb-0">Tempel Hasil JSON Soal dari Gemini / ChatGPT</label>
+                      <button
+                        type="button"
+                        className="text-[11px] font-semibold text-[#126451] underline cursor-pointer"
+                        onClick={() => {
+                          setPastedJson(SAMPLE_QUIZ_JSON);
+                          setJsonError(null);
+                        }}
+                      >
+                        Isi Contoh JSON
+                      </button>
+                    </div>
+                    <textarea
+                      rows={5}
+                      className="in text-xs font-mono"
+                      placeholder='Tempel seluruh respons JSON soal dari Gemini atau ChatGPT di sini (boleh termasuk tanda ```json ... ```)...'
+                      value={pastedJson}
+                      onChange={(e) => {
+                        setPastedJson(e.target.value);
+                        if (jsonError) setJsonError(null);
+                      }}
+                    />
+                  </div>
+
+                  {jsonError && (
+                    <div className="p-2.5 rounded-lg bg-[#fbeeed] border border-[#e3b9b6] text-xs text-[#8a1c16]">
+                      {jsonError}
+                    </div>
+                  )}
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      className="btn primary sm"
+                      onClick={() => handleImportQuizJson('new')}
+                    >
+                      <ClipboardPaste className="w-3.5 h-3.5" /> Buat Kuis Baru dari JSON
+                    </button>
+                    {activeQuiz && (
+                      <button
+                        type="button"
+                        className="btn sm"
+                        onClick={() => handleImportQuizJson('append')}
+                      >
+                        <Plus className="w-3.5 h-3.5" /> Tambahkan ke Kuis Aktif
+                      </button>
+                    )}
+                    <label className="btn sm cursor-pointer">
+                      <Upload className="w-3.5 h-3.5" /> Unggah File .json
+                      <input
+                        type="file"
+                        accept=".json,application/json"
+                        className="hidden"
+                        onChange={handleUploadQuizJsonFile}
+                      />
+                    </label>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -670,6 +1039,13 @@ export const KuisInteraktifView: React.FC = () => {
                 </button>
                 <button
                   type="button"
+                  className="btn sm"
+                  onClick={handleExportActiveQuizJson}
+                >
+                  <Download className="w-4 h-4" /> Ekspor JSON
+                </button>
+                <button
+                  type="button"
                   className="btn sm danger"
                   onClick={() => handleDeleteQuiz(activeQuiz)}
                 >
@@ -695,6 +1071,9 @@ export const KuisInteraktifView: React.FC = () => {
                 <div className="flex flex-wrap gap-2">
                   <button type="button" className="btn sm" onClick={handleCopyLink}>
                     <Copy className="w-3.5 h-3.5" /> Salin Link
+                  </button>
+                  <button type="button" className="btn sm" onClick={handleCopyInviteMessage}>
+                    <Share2 className="w-3.5 h-3.5" /> Salin Pesan WA Siswa
                   </button>
                   <button
                     type="button"

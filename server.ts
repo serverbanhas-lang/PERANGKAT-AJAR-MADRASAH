@@ -82,9 +82,11 @@ function saveQuizzesStore(store: Record<string, PublishedQuizRecord>): void {
 }
 
 function getGenAI(): GoogleGenAI {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    throw new Error('GEMINI_API_KEY belum dikonfigurasi pada Secrets panel server.');
+  const apiKey = (process.env.GEMINI_API_KEY || '').trim();
+  if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
+    throw new Error(
+      'GEMINI_API_KEY belum terpasang pada Settings > Secrets server. Gunakan tombol "Salin Prompt (Gemini / ChatGPT)" lalu "Tempel JSON", atau pasang API Key di Secrets panel.'
+    );
   }
   return new GoogleGenAI({
     apiKey,
@@ -94,6 +96,77 @@ function getGenAI(): GoogleGenAI {
       },
     },
   });
+}
+
+function parseGeminiJson<T = Record<string, unknown>>(rawText: string | undefined): T {
+  const trimmed = String(rawText ?? '').trim();
+  if (!trimmed) {
+    throw new Error('Respons AI kosong.');
+  }
+  const fenceMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = (fenceMatch ? fenceMatch[1] : trimmed).trim();
+  try {
+    return JSON.parse(candidate) as T;
+  } catch {
+    const startObj = candidate.indexOf('{');
+    const endObj = candidate.lastIndexOf('}');
+    if (startObj !== -1 && endObj > startObj) {
+      return JSON.parse(candidate.slice(startObj, endObj + 1)) as T;
+    }
+    throw new Error('Format JSON dari AI tidak valid.');
+  }
+}
+
+function formatGeminiError(err: unknown, fallbackMsg: string): { status: number; message: string } {
+  const rawMsg = err instanceof Error ? err.message : String(err || fallbackMsg);
+  const lower = rawMsg.toLowerCase();
+
+  if (lower.includes('gemini_api_key')) {
+    return { status: 400, message: rawMsg };
+  }
+  if (lower.includes('api_key_invalid') || lower.includes('permission_denied') || lower.includes('403') || lower.includes('401')) {
+    return {
+      status: 403,
+      message:
+        'API Key Gemini tidak valid atau ditolak. Periksa API Key di Settings > Secrets, atau gunakan menu "Salin Prompt & Tempel JSON".',
+    };
+  }
+  if (lower.includes('resource_exhausted') || lower.includes('429') || lower.includes('quota')) {
+    return {
+      status: 429,
+      message:
+        'Kuota Gemini API sedang penuh (429). Tunggu sebentar atau gunakan menu "Salin Prompt (Gemini / ChatGPT) & Tempel JSON".',
+    };
+  }
+  if (lower.includes('not_found') || lower.includes('404')) {
+    return {
+      status: 404,
+      message: `Model AI tidak ditemukan (${rawMsg}). Silakan gunakan menu "Salin Prompt & Tempel JSON".`,
+    };
+  }
+  return { status: 500, message: rawMsg || fallbackMsg };
+}
+
+async function generateContentWithRetry(
+  ai: GoogleGenAI,
+  params: Parameters<GoogleGenAI['models']['generateContent']>[0],
+  maxAttempts = 2
+) {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      return await ai.models.generateContent(params);
+    } catch (err) {
+      lastErr = err;
+      const msg = err instanceof Error ? err.message.toLowerCase() : '';
+      const isTransient = msg.includes('503') || msg.includes('unavailable') || msg.includes('429') || msg.includes('timeout');
+      if (!isTransient || attempt === maxAttempts - 1) {
+        throw err;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 600 * (attempt + 1)));
+    }
+  }
+  throw lastErr;
 }
 
 function computeSubmissionScores(
@@ -338,7 +411,7 @@ INSTRUKSI:
 3. Setiap soal memiliki poin (points): misal 10 untuk PG dan 20 untuk Esai.
 4. Pastikan seluruh soal akurat dan bersumber dari bahan ajar di atas. Gunakan bahasa Indonesia yang jelas.`;
 
-      const response = await ai.models.generateContent({
+      const response = await generateContentWithRetry(ai, {
         model: 'gemini-4-hydrogen',
         contents: prompt,
         config: {
@@ -366,7 +439,7 @@ INSTRUKSI:
         },
       });
 
-      const parsed = JSON.parse((response.text ?? '{"questions":[]}').trim());
+      const parsed = parseGeminiJson<{ questions?: Array<Record<string, unknown>> }>(response.text);
       const rawQuestions = Array.isArray(parsed.questions) ? parsed.questions : [];
       const questions: QuizQuestionRecord[] = rawQuestions.map((q: Record<string, unknown>, idx: number) => {
         const isEssay = String(q.type || '').toLowerCase() === 'esai';
@@ -385,8 +458,114 @@ INSTRUKSI:
 
       res.json({ questions });
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Gagal membuat soal kuis dengan Gemini AI.';
-      res.status(500).json({ error: message });
+      const formatted = formatGeminiError(err, 'Gagal membuat soal kuis dengan Gemini AI.');
+      res.status(formatted.status).json({ error: formatted.message });
+    }
+  });
+
+  // Generator Media Pembelajaran Interaktif dari Bahan Ajar Mendalam
+  app.post('/api/generate-media', async (req, res) => {
+    try {
+      const ai = getGenAI();
+      const {
+        materiText = '',
+        judul = '',
+        mapel = '',
+        kelas = '',
+        tp = '',
+        kbc = '',
+        jenisMedia = 'slide-presentasi',
+        jumlahSlide = 8,
+      } = req.body || {};
+
+      if (!String(materiText).trim()) {
+        res.status(400).json({ error: 'Teks bahan ajar mendalam tidak boleh kosong.' });
+        return;
+      }
+
+      const slideTarget = Math.max(4, Math.min(16, Number(jumlahSlide) || 8));
+      const jenisDescMap: Record<string, string> = {
+        'slide-presentasi': 'Slide Presentasi Mengajar di Kelas / Proyektor',
+        'peta-konsep': 'Peta Konsep & Alur Pemahaman Bertahap',
+        'kartu-ajar': 'Kartu Ajar Interaktif & Flashcard Konsep',
+        'studi-kasus': 'Media Studi Kasus, Masalah Kontekstual & Diskusi Kelompok',
+      };
+
+      const prompt = `Anda adalah desainer media pembelajaran interaktif Madrasah Aliyah berbasis Pembelajaran Mendalam dan Kurikulum Berbasis Cinta (KBC).
+Ubah bahan ajar mendalam di bawah ini menjadi media pembelajaran kelas yang menarik, runtut, dan mudah dipahami peserta didik.
+
+IDENTITAS MEDIA:
+- Judul Media: ${judul || 'Media Pembelajaran'}
+- Jenis Media: ${jenisDescMap[String(jenisMedia)] || jenisMedia}
+- Mata Pelajaran: ${mapel || '-'}
+- Kelas: ${kelas || '-'}
+- Tujuan Pembelajaran: ${tp || '-'}
+- Tema KBC: ${kbc || '-'}
+- Target Jumlah Slide/Kartu: ${slideTarget}
+
+BAHAN AJAR MENDALAM:
+${String(materiText).slice(0, 18000)}
+
+INSTRUKSI:
+1. Susun tepat ${slideTarget} slide/kartu yang runtut: mulai dari pembuka/pemantik, tujuan, konsep kunci, uraian inti, contoh penerapan, integrasi nilai KBC, kuis cepat/cek pemahaman, hingga refleksi dan rangkuman.
+2. Pada setiap slide wajib mengisi:
+   - judulSlide: judul singkat & menarik
+   - tipe: pilih salah satu dari "pembuka", "tujuan", "konsep", "uraian", "contoh", "visual", "kbc", "kuis-cepat", "refleksi", "rangkuman"
+   - ringkasan: narasi singkat 2-4 kalimat yang ramah layar proyektor
+   - poinUtama: array 3-5 poin ringkas padat
+   - visualIde: ide konkret bagan/diagram/ilustrasi untuk slide ini
+   - catatanGuru: panduan lisan guru saat menayangkan slide ini
+   - pertanyaanInteraktif: 1 pertanyaan singkat untuk mengajak siswa aktif
+3. Isi pula tujuanPembelajaran, integrasiKbc, aktivitasKelas, dan glosarium istilah kunci. Gunakan bahasa Indonesia yang jelas dan baku.`;
+
+      const response = await generateContentWithRetry(ai, {
+        model: 'gemini-4-hydrogen',
+        contents: prompt,
+        config: {
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              judul: { type: Type.STRING },
+              subjudul: { type: Type.STRING },
+              tujuanPembelajaran: { type: Type.STRING },
+              integrasiKbc: { type: Type.STRING },
+              aktivitasKelas: { type: Type.STRING },
+              glosarium: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    istilah: { type: Type.STRING },
+                    makna: { type: Type.STRING },
+                  },
+                },
+              },
+              slides: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    judulSlide: { type: Type.STRING },
+                    tipe: { type: Type.STRING },
+                    ringkasan: { type: Type.STRING },
+                    poinUtama: { type: Type.ARRAY, items: { type: Type.STRING } },
+                    visualIde: { type: Type.STRING },
+                    catatanGuru: { type: Type.STRING },
+                    pertanyaanInteraktif: { type: Type.STRING },
+                  },
+                },
+              },
+            },
+          },
+        },
+      });
+
+      const parsed = parseGeminiJson<Record<string, unknown>>(response.text);
+      res.json({ media: parsed });
+    } catch (err) {
+      const formatted = formatGeminiError(err, 'Gagal menyusun media pembelajaran dengan Gemini AI.');
+      res.status(formatted.status).json({ error: formatted.message });
     }
   });
 

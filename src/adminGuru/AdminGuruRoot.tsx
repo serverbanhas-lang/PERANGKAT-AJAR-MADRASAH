@@ -4,6 +4,7 @@ import { AbsensiView } from './AbsensiView';
 import { JurnalView } from './JurnalView';
 import { NilaiHarianView } from './NilaiHarianView';
 import { KuisInteraktifView } from './KuisInteraktifView';
+import { MediaPembelajaranView } from './MediaPembelajaranView';
 
 interface AdminGuruRootProps {
   view: string;
@@ -19,6 +20,8 @@ export const AdminGuruRoot: React.FC<AdminGuruRootProps> = ({ view }) => {
       return <JurnalView />;
     case 'nilai-harian':
       return <NilaiHarianView />;
+    case 'media-pembelajaran':
+      return <MediaPembelajaranView />;
     case 'kuis-interaktif':
       return <KuisInteraktifView />;
     default:
