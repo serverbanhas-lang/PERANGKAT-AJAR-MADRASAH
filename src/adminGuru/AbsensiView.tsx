@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { CalendarCheck, CheckCheck, Printer, RotateCcw } from 'lucide-react';
 import {
   computeAttendanceSummary,
@@ -8,9 +8,9 @@ import {
   getDayCalendarStatus,
   getLegacyState,
   getPreferredKelasId,
-  subscribeMasterStudents,
   updateAdminGuruState,
 } from './bridge';
+import { useGlobalStudents } from './useGlobalStudents';
 import type { AttendanceStatus, TingkatKelas } from '../types/adminGuru';
 
 function todayIso(): string {
@@ -27,36 +27,33 @@ const STATUS_META: Array<{ code: AttendanceStatus; label: string; activeClass: s
 
 export const AbsensiView: React.FC = () => {
   const [adminState, setAdminState] = useState(() => getAdminGuruState());
+  const { classes: globalClasses } = useGlobalStudents();
   const [filterTingkat, setFilterTingkat] = useState<'all' | TingkatKelas>('all');
   const [selectedKelasId, setSelectedKelasId] = useState<string>(() =>
-    getPreferredKelasId(adminState.classes)
+    getPreferredKelasId(globalClasses)
   );
   const [selectedDate, setSelectedDate] = useState<string>(todayIso());
-
-  useEffect(() => {
-    return subscribeMasterStudents(() => setAdminState(getAdminGuruState()));
-  }, []);
 
   const api = getAppApi();
   const legacy = getLegacyState();
 
   const visibleClasses = useMemo(() => {
-    if (filterTingkat === 'all') return adminState.classes;
-    return adminState.classes.filter((c) => c.tingkat === filterTingkat);
-  }, [adminState.classes, filterTingkat]);
+    if (filterTingkat === 'all') return globalClasses;
+    return globalClasses.filter((c) => c.tingkat === filterTingkat);
+  }, [globalClasses, filterTingkat]);
 
   const activeKelas = useMemo(
-    () => adminState.classes.find((c) => c.id === selectedKelasId) || visibleClasses[0],
-    [adminState.classes, selectedKelasId, visibleClasses]
+    () => globalClasses.find((c) => c.id === selectedKelasId) || visibleClasses[0],
+    [globalClasses, selectedKelasId, visibleClasses]
   );
 
   const effectiveKelasId = activeKelas?.id || selectedKelasId;
 
-  const studentsInClass = useMemo(() => {
-    return adminState.students
-      .filter((s) => s.kelasId === effectiveKelasId && s.status !== 'nonaktif')
-      .sort((a, b) => a.nama.localeCompare(b.nama));
-  }, [adminState.students, effectiveKelasId]);
+  const { students: studentsInClass } = useGlobalStudents({
+    kelasId: effectiveKelasId,
+    activeOnly: true,
+    sortByName: true,
+  });
 
   const attendanceKey = `${effectiveKelasId}::${selectedDate}`;
   const currentRecord = adminState.attendance[attendanceKey] || {};
@@ -147,8 +144,8 @@ export const AbsensiView: React.FC = () => {
                     setFilterTingkat(t);
                     const first =
                       t === 'all'
-                        ? adminState.classes[0]
-                        : adminState.classes.find((c) => c.tingkat === t);
+                        ? globalClasses[0]
+                        : globalClasses.find((c) => c.tingkat === t);
                     if (first) setSelectedKelasId(first.id);
                   }}
                 >

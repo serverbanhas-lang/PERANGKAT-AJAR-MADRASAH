@@ -31,6 +31,7 @@ import {
   getDynamicTPs,
   getLegacyState,
   getPreferredKelasId,
+  getStudentsByKelas,
   parseImportedQuizJson,
   subscribeMasterStudents,
   updateAdminGuruState,
@@ -419,9 +420,11 @@ export const KuisInteraktifView: React.FC = () => {
     }
     setPublishing(true);
     try {
-      const roster = adminState.students
-        .filter((s) => s.kelasId === activeQuiz.kelasId && s.status !== 'nonaktif')
-        .map((s) => ({ id: s.id, nisn: s.nisn, nama: s.nama }));
+      const roster = getStudentsByKelas(activeQuiz.kelasId).map((s) => ({
+        id: s.id,
+        nisn: s.nisn,
+        nama: s.nama,
+      }));
 
       const res = await fetch('/api/quizzes', {
         method: 'POST',
@@ -530,7 +533,7 @@ export const KuisInteraktifView: React.FC = () => {
     let matchedCount = 0;
 
     const updated = updateAdminGuruState((prev) => {
-      const classStudents = prev.students.filter((s) => s.kelasId === activeQuiz.kelasId);
+      const classStudents = getStudentsByKelas(activeQuiz.kelasId, { activeOnly: false });
       const existingBook = prev.grades[gradeKey] || {
         weights: { ...DEFAULT_WEIGHTS },
         tpCount: Math.max(5, dynamicTPs.length),

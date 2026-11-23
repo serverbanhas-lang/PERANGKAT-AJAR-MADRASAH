@@ -312,6 +312,14 @@ export interface DynamicTP {
   elemen: string;
 }
 
+export interface GlobalStudentQueryOptions {
+  kelasId?: string;
+  tingkat?: TingkatKelas | 'all';
+  activeOnly?: boolean;
+  search?: string;
+  sortByName?: boolean;
+}
+
 export interface AppApiBridge {
   getState: () => LegacyAppState;
   save: () => void;
@@ -327,6 +335,9 @@ export interface AppApiBridge {
   tpText: (tp: LegacyTP) => string;
   tglID: (isoDate: string) => string;
   signHTML: () => string;
+  getStudents?: (options?: GlobalStudentQueryOptions) => StudentItem[];
+  getClasses?: (tingkat?: TingkatKelas | 'all') => KelasItem[];
+  setStudents?: (students: StudentItem[]) => StudentItem[];
 }
 
 declare global {

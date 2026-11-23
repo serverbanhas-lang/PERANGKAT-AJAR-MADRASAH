@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import {
   Check,
   Download,
@@ -20,21 +20,24 @@ import {
   createUid,
   downloadStudentTemplateXlsx,
   exportStudentsXlsx,
-  getAdminGuruState,
   getAppApi,
+  getGlobalStudents,
   getLegacyState,
   parseStudentImportXlsx,
-  readGlobalMasterStore,
-  subscribeMasterStudents,
-  syncMasterStudentsWithServer,
+  setGlobalStudents,
   updateAdminGuruState,
   writeGlobalMasterStore,
 } from './bridge';
+import { useGlobalStudents } from './useGlobalStudents';
 import type { JenisKelamin, KelasItem, StudentItem, TingkatKelas } from '../types/adminGuru';
 
 export const DataSiswaView: React.FC = () => {
-  const [adminState, setAdminState] = useState(() => getAdminGuruState());
-  const [masterMeta, setMasterMeta] = useState(() => readGlobalMasterStore());
+  const {
+    allStudents: globalStudents,
+    classes: globalClasses,
+    isLockedForTeachers,
+    syncAll,
+  } = useGlobalStudents();
   const [syncing, setSyncing] = useState(false);
 
   const [filterTingkat, setFilterTingkat] = useState<'all' | TingkatKelas>('all');
@@ -47,7 +50,7 @@ export const DataSiswaView: React.FC = () => {
   const [formNisn, setFormNisn] = useState('');
   const [formNama, setFormNama] = useState('');
   const [formJk, setFormJk] = useState<JenisKelamin>('L');
-  const [formKelasId, setFormKelasId] = useState<string>(adminState.classes[0]?.id || 'kls_10_a');
+  const [formKelasId, setFormKelasId] = useState<string>(globalClasses[0]?.id || 'kls_10_a');
 
   // Form kelola rombel
   const [showRombelPanel, setShowRombelPanel] = useState(false);
@@ -72,23 +75,11 @@ export const DataSiswaView: React.FC = () => {
   const legacy = getLegacyState();
   const activeMapelName = legacy?.ws?.mapel || legacy?.identitas?.mapel || '';
   const activeKelasName = legacy?.ws?.kelas || legacy?.identitas?.kelas || '';
-  const isLockedForTeachers = masterMeta.adminLockedForTeachers;
-
-  useEffect(() => {
-    const refresh = () => {
-      setAdminState(getAdminGuruState());
-      setMasterMeta(readGlobalMasterStore());
-    };
-    const unsub = subscribeMasterStudents(refresh);
-    return unsub;
-  }, []);
 
   const handleManualSyncAll = async () => {
     setSyncing(true);
     try {
-      const merged = await syncMasterStudentsWithServer({ rescanWorkspaces: true });
-      setAdminState(getAdminGuruState());
-      setMasterMeta(merged);
+      const merged = await syncAll({ rescanWorkspaces: true });
       api?.toast(
         `Sinkronisasi selesai: ${merged.students.length} siswa & ${merged.classes.length} rombel aktif untuk semua mapel.`
       );
@@ -99,8 +90,7 @@ export const DataSiswaView: React.FC = () => {
 
   const handleToggleLockForTeachers = () => {
     const nextLocked = !isLockedForTeachers;
-    const saved = writeGlobalMasterStore({ adminLockedForTeachers: nextLocked }, true);
-    setMasterMeta(saved);
+    writeGlobalMasterStore({ adminLockedForTeachers: nextLocked }, true);
     if (nextLocked) {
       setShowStudentForm(false);
       setShowRombelPanel(false);
@@ -112,17 +102,17 @@ export const DataSiswaView: React.FC = () => {
   };
 
   const classesByTingkat = useMemo(() => {
-    if (filterTingkat === 'all') return adminState.classes;
-    return adminState.classes.filter((c) => c.tingkat === filterTingkat);
-  }, [adminState.classes, filterTingkat]);
+    if (filterTingkat === 'all') return globalClasses;
+    return globalClasses.filter((c) => c.tingkat === filterTingkat);
+  }, [globalClasses, filterTingkat]);
 
   const classMap = useMemo(() => {
-    return new Map(adminState.classes.map((c) => [c.id, c]));
-  }, [adminState.classes]);
+    return new Map(globalClasses.map((c) => [c.id, c]));
+  }, [globalClasses]);
 
   const filteredStudents = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return adminState.students
+    return globalStudents
       .filter((s) => {
         const cls = classMap.get(s.kelasId);
         if (filterTingkat !== 'all' && cls?.tingkat !== filterTingkat) return false;
@@ -142,7 +132,7 @@ export const DataSiswaView: React.FC = () => {
         if (ca !== cb) return ca.localeCompare(cb);
         return a.nama.localeCompare(b.nama);
       });
-  }, [adminState.students, classMap, filterTingkat, filterKelasId, search]);
+  }, [globalStudents, classMap, filterTingkat, filterKelasId, search]);
 
   const stats = useMemo(() => {
     const total = filteredStudents.length;
@@ -160,7 +150,7 @@ export const DataSiswaView: React.FC = () => {
     const defaultKls =
       filterKelasId !== 'all'
         ? filterKelasId
-        : classesByTingkat[0]?.id || adminState.classes[0]?.id || '';
+        : classesByTingkat[0]?.id || globalClasses[0]?.id || '';
     setFormKelasId(defaultKls);
     setShowStudentForm(true);
   };
@@ -188,16 +178,13 @@ export const DataSiswaView: React.FC = () => {
       return;
     }
 
-    const updated = updateAdminGuruState((prev) => {
+    setGlobalStudents((prev) => {
       if (editingId) {
-        return {
-          ...prev,
-          students: prev.students.map((s) =>
-            s.id === editingId
-              ? { ...s, nisn: formNisn.trim(), nama, jk: formJk, kelasId: formKelasId }
-              : s
-          ),
-        };
+        return prev.map((s) =>
+          s.id === editingId
+            ? { ...s, nisn: formNisn.trim(), nama, jk: formJk, kelasId: formKelasId }
+            : s
+        );
       }
       const newStudent: StudentItem = {
         id: createUid('std'),
@@ -207,13 +194,9 @@ export const DataSiswaView: React.FC = () => {
         kelasId: formKelasId,
         status: 'aktif',
       };
-      return {
-        ...prev,
-        students: [...prev.students, newStudent],
-      };
+      return [...prev, newStudent];
     });
 
-    setAdminState(updated);
     setShowStudentForm(false);
     setEditingId(null);
     api?.toast(
@@ -225,11 +208,7 @@ export const DataSiswaView: React.FC = () => {
 
   const handleDeleteStudent = (id: string) => {
     if (isLockedForTeachers) return;
-    const updated = updateAdminGuruState((prev) => ({
-      ...prev,
-      students: prev.students.filter((s) => s.id !== id),
-    }));
-    setAdminState(updated);
+    setGlobalStudents((prev) => prev.filter((s) => s.id !== id));
     setConfirmDeleteId(null);
     api?.toast('Data siswa dihapus dari Master Sekolah.');
   };
@@ -242,7 +221,7 @@ export const DataSiswaView: React.FC = () => {
       api?.toast('Nama rombel wajib diisi (misal: X-C atau XI-IPA-2).');
       return;
     }
-    const exists = adminState.classes.some((c) => c.nama.toLowerCase() === nama.toLowerCase());
+    const exists = globalClasses.some((c) => c.nama.toLowerCase() === nama.toLowerCase());
     if (exists) {
       api?.toast(`Kelas "${nama}" sudah terdaftar.`);
       return;
@@ -254,11 +233,10 @@ export const DataSiswaView: React.FC = () => {
       jurusan: newRombelJurusan.trim() || 'Umum',
       waliKelas: newRombelWali.trim(),
     };
-    const updated = updateAdminGuruState((prev) => ({
+    updateAdminGuruState((prev) => ({
       ...prev,
       classes: [...prev.classes, newKelas],
     }));
-    setAdminState(updated);
     setNewRombelNama('');
     setNewRombelWali('');
     api?.toast(`Rombel ${nama} berhasil ditambahkan untuk semua mapel.`);
@@ -266,17 +244,16 @@ export const DataSiswaView: React.FC = () => {
 
   const handleDeleteRombel = (kelasId: string) => {
     if (isLockedForTeachers) return;
-    const hasStudents = adminState.students.some((s) => s.kelasId === kelasId);
+    const hasStudents = getGlobalStudents({ kelasId }).length > 0;
     if (hasStudents) {
       api?.toast('Kosongkan atau pindahkan siswa dari rombel ini terlebih dahulu.');
       setConfirmDeleteClassId(null);
       return;
     }
-    const updated = updateAdminGuruState((prev) => ({
+    updateAdminGuruState((prev) => ({
       ...prev,
       classes: prev.classes.filter((c) => c.id !== kelasId),
     }));
-    setAdminState(updated);
     if (filterKelasId === kelasId) setFilterKelasId('all');
     setConfirmDeleteClassId(null);
     api?.toast('Rombel berhasil dihapus.');
@@ -287,7 +264,7 @@ export const DataSiswaView: React.FC = () => {
       filterKelasId !== 'all'
         ? classMap.get(filterKelasId)?.nama
         : classesByTingkat[0]?.nama;
-    downloadStudentTemplateXlsx(adminState.classes, selectedNama);
+    downloadStudentTemplateXlsx(globalClasses, selectedNama);
     api?.toast('Template Excel (.xlsx) berhasil diunduh.');
   };
 
@@ -300,12 +277,12 @@ export const DataSiswaView: React.FC = () => {
     const fallbackId =
       filterKelasId !== 'all'
         ? filterKelasId
-        : classesByTingkat[0]?.id || adminState.classes[0]?.id || '';
+        : classesByTingkat[0]?.id || globalClasses[0]?.id || '';
 
     try {
       const { imported, skippedRows } = await parseStudentImportXlsx(
         file,
-        adminState.classes,
+        globalClasses,
         fallbackId
       );
       if (imported.length === 0) {
@@ -323,9 +300,9 @@ export const DataSiswaView: React.FC = () => {
     let addedCount = 0;
     let duplicateCount = 0;
 
-    const updated = updateAdminGuruState((prev) => {
+    setGlobalStudents((prev) => {
       const existingSig = new Set(
-        prev.students.map((s) =>
+        prev.map((s) =>
           s.nisn
             ? `nisn:${s.nisn.trim().toLowerCase()}::${s.nama.trim().toLowerCase()}`
             : `name:${s.nama.trim().toLowerCase()}::${s.kelasId}`
@@ -344,13 +321,9 @@ export const DataSiswaView: React.FC = () => {
         uniqueNew.push(row);
       }
       addedCount = uniqueNew.length;
-      return {
-        ...prev,
-        students: [...prev.students, ...uniqueNew],
-      };
+      return [...prev, ...uniqueNew];
     });
 
-    setAdminState(updated);
     api?.toast(
       duplicateCount > 0
         ? `Berhasil mengimpor ${addedCount} siswa baru (${duplicateCount} duplikat dilewati). Tersedia untuk semua mapel!`
@@ -370,7 +343,7 @@ export const DataSiswaView: React.FC = () => {
         : filterTingkat !== 'all'
           ? `Kelas_${filterTingkat}`
           : 'Semua_Kelas';
-    exportStudentsXlsx(filteredStudents, adminState.classes, label);
+    exportStudentsXlsx(filteredStudents, globalClasses, label);
     api?.toast('Data siswa berhasil diekspor ke Excel (.xlsx).');
   };
 
@@ -441,8 +414,8 @@ export const DataSiswaView: React.FC = () => {
           <div>
             <h2 className="!border-0 !pb-0 !mb-1">Master Data Kelas &amp; Siswa</h2>
             <p className="hint !mb-0">
-              Total tersimpan di Master Sekolah: <b>{adminState.students.length} siswa</b> pada{' '}
-              <b>{adminState.classes.length} rombel</b> (terhubung ke seluruh mapel).
+              Total tersimpan di Master Sekolah: <b>{globalStudents.length} siswa</b> pada{' '}
+              <b>{globalClasses.length} rombel</b> (terhubung ke seluruh mapel).
             </p>
           </div>
           {!isLockedForTeachers && (
@@ -497,7 +470,7 @@ export const DataSiswaView: React.FC = () => {
             >
               <option value="all">Semua Rombel ({classesByTingkat.length})</option>
               {classesByTingkat.map((c) => {
-                const count = adminState.students.filter((s) => s.kelasId === c.id).length;
+                const count = globalStudents.filter((s) => s.kelasId === c.id).length;
                 return (
                   <option key={c.id} value={c.id}>
                     Kelas {c.tingkat} — {c.nama} ({c.jurusan}) · {count} siswa
@@ -613,8 +586,8 @@ export const DataSiswaView: React.FC = () => {
           </form>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
-            {adminState.classes.map((c) => {
-              const count = adminState.students.filter((s) => s.kelasId === c.id).length;
+            {globalClasses.map((c) => {
+              const count = globalStudents.filter((s) => s.kelasId === c.id).length;
               return (
                 <div
                   key={c.id}
@@ -707,7 +680,7 @@ export const DataSiswaView: React.FC = () => {
                 value={formKelasId}
                 onChange={(e) => setFormKelasId(e.target.value)}
               >
-                {adminState.classes.map((c) => (
+                {globalClasses.map((c) => (
                   <option key={c.id} value={c.id}>
                     Kelas {c.tingkat} — {c.nama}
                   </option>
@@ -770,7 +743,7 @@ export const DataSiswaView: React.FC = () => {
                 }}
               >
                 <option value="">Setel Kelas Semua Baris...</option>
-                {adminState.classes.map((c) => (
+                {globalClasses.map((c) => (
                   <option key={c.id} value={c.id}>
                     Kelas {c.tingkat} — {c.nama}
                   </option>
@@ -817,7 +790,7 @@ export const DataSiswaView: React.FC = () => {
           <div className="empty">
             <b>Belum ada data siswa pada filter ini</b>
             <span>
-              {adminState.students.length > 0
+              {globalStudents.length > 0
                 ? 'Coba ubah filter Tingkat/Rombel ke "Semua" atau cek kolom pencarian.'
                 : 'Klik "Sinkronkan Semua Mapel" jika data pernah diunggah pada mapel lain, atau gunakan tombol Tambah Siswa / Impor Excel (.xlsx).'}
             </span>

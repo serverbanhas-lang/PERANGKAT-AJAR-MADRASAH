@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { Award, Download, Printer, SlidersHorizontal } from 'lucide-react';
 import {
   calcStudentGradeMetrics,
@@ -11,9 +11,9 @@ import {
   getDynamicTPs,
   getLegacyState,
   getPreferredKelasId,
-  subscribeMasterStudents,
   updateAdminGuruState,
 } from './bridge';
+import { useGlobalStudents } from './useGlobalStudents';
 import type { GradeBookData, GradeWeights, TingkatKelas } from '../types/adminGuru';
 
 function clampScore(raw: string): number | '' {
@@ -26,41 +26,38 @@ function clampScore(raw: string): number | '' {
 
 export const NilaiHarianView: React.FC = () => {
   const [adminState, setAdminState] = useState(() => getAdminGuruState());
+  const { classes: globalClasses } = useGlobalStudents();
   const legacy = getLegacyState();
   const api = getAppApi();
-
-  useEffect(() => {
-    return subscribeMasterStudents(() => setAdminState(getAdminGuruState()));
-  }, []);
 
   const mapelList = useMemo(() => getActiveMapelList(legacy), [legacy]);
   const dynamicTPs = useMemo(() => getDynamicTPs(legacy), [legacy]);
 
   const [filterTingkat, setFilterTingkat] = useState<'all' | TingkatKelas>('all');
   const [selectedKelasId, setSelectedKelasId] = useState<string>(() =>
-    getPreferredKelasId(adminState.classes)
+    getPreferredKelasId(globalClasses)
   );
   const [selectedMapel, setSelectedMapel] = useState<string>(mapelList[0] || 'Mata Pelajaran Utama');
   const [customMapel, setCustomMapel] = useState('');
   const [showWeightEditor, setShowWeightEditor] = useState(false);
 
   const visibleClasses = useMemo(() => {
-    if (filterTingkat === 'all') return adminState.classes;
-    return adminState.classes.filter((c) => c.tingkat === filterTingkat);
-  }, [adminState.classes, filterTingkat]);
+    if (filterTingkat === 'all') return globalClasses;
+    return globalClasses.filter((c) => c.tingkat === filterTingkat);
+  }, [globalClasses, filterTingkat]);
 
   const activeKelas = useMemo(
-    () => adminState.classes.find((c) => c.id === selectedKelasId) || visibleClasses[0],
-    [adminState.classes, selectedKelasId, visibleClasses]
+    () => globalClasses.find((c) => c.id === selectedKelasId) || visibleClasses[0],
+    [globalClasses, selectedKelasId, visibleClasses]
   );
   const effectiveKelasId = activeKelas?.id || selectedKelasId;
   const gradeKey = `${effectiveKelasId}::${selectedMapel}`;
 
-  const studentsInClass = useMemo(() => {
-    return adminState.students
-      .filter((s) => s.kelasId === effectiveKelasId && s.status !== 'nonaktif')
-      .sort((a, b) => a.nama.localeCompare(b.nama));
-  }, [adminState.students, effectiveKelasId]);
+  const { students: studentsInClass } = useGlobalStudents({
+    kelasId: effectiveKelasId,
+    activeOnly: true,
+    sortByName: true,
+  });
 
   const defaultTpCount = Math.max(1, Math.min(10, dynamicTPs.length || 5));
 
@@ -234,8 +231,8 @@ export const NilaiHarianView: React.FC = () => {
                     setFilterTingkat(t);
                     const first =
                       t === 'all'
-                        ? adminState.classes[0]
-                        : adminState.classes.find((c) => c.tingkat === t);
+                        ? globalClasses[0]
+                        : globalClasses.find((c) => c.tingkat === t);
                     if (first) setSelectedKelasId(first.id);
                   }}
                 >

@@ -4,6 +4,7 @@ import type {
   AppApiBridge,
   AttendanceStatus,
   DynamicTP,
+  GlobalStudentQueryOptions,
   GradeBookData,
   GradeWeights,
   JournalItem,
@@ -645,6 +646,99 @@ export function updateAdminGuruState(
   s.adminGuru = next;
   api.save();
   return next;
+}
+
+/**
+ * Mengambil daftar rombel/kelas global dari root state (S.adminGuru.classes)
+ * yang berlaku lintas semua mata pelajaran dan guru.
+ */
+export function getGlobalClasses(tingkat?: TingkatKelas | 'all'): KelasItem[] {
+  const { classes } = getAdminGuruState();
+  if (!tingkat || tingkat === 'all') return classes;
+  return classes.filter((c) => c.tingkat === tingkat);
+}
+
+/**
+ * Mengambil daftar siswa global dari root state (S.adminGuru.students)
+ * sehingga dapat dipanggil dari komponen atau mata pelajaran mana pun.
+ */
+export function getGlobalStudents(options: GlobalStudentQueryOptions = {}): StudentItem[] {
+  const { students, classes } = getAdminGuruState();
+  const { kelasId, tingkat, activeOnly = false, search, sortByName = false } = options;
+
+  let result = students;
+
+  if (activeOnly) {
+    result = result.filter((st) => st.status !== 'nonaktif');
+  }
+
+  if (kelasId && kelasId !== 'all') {
+    result = result.filter((st) => st.kelasId === kelasId);
+  }
+
+  if (tingkat && tingkat !== 'all') {
+    const allowedClassIds = new Set(
+      classes.filter((c) => c.tingkat === tingkat).map((c) => c.id)
+    );
+    result = result.filter((st) => allowedClassIds.has(st.kelasId));
+  }
+
+  if (search && search.trim()) {
+    const q = search.trim().toLowerCase();
+    const classMap = new Map(classes.map((c) => [c.id, c]));
+    result = result.filter(
+      (st) =>
+        st.nama.toLowerCase().includes(q) ||
+        st.nisn.toLowerCase().includes(q) ||
+        (classMap.get(st.kelasId)?.nama || '').toLowerCase().includes(q)
+    );
+  }
+
+  if (sortByName) {
+    return [...result].sort((a, b) => a.nama.localeCompare(b.nama));
+  }
+
+  return result;
+}
+
+/**
+ * Utilitas ringkas mengambil daftar siswa aktif pada rombel tertentu
+ * (terurut sesuai abjad nama).
+ */
+export function getStudentsByKelas(
+  kelasId: string,
+  options?: { activeOnly?: boolean; sortByName?: boolean }
+): StudentItem[] {
+  return getGlobalStudents({
+    kelasId,
+    activeOnly: options?.activeOnly ?? true,
+    sortByName: options?.sortByName ?? true,
+  });
+}
+
+export function getStudentById(studentId: string): StudentItem | undefined {
+  if (!studentId) return undefined;
+  return getGlobalStudents().find((st) => st.id === studentId);
+}
+
+export function getStudentByNisn(nisn: string): StudentItem | undefined {
+  const clean = String(nisn || '').trim().toLowerCase();
+  if (!clean) return undefined;
+  return getGlobalStudents().find((st) => st.nisn.trim().toLowerCase() === clean);
+}
+
+/**
+ * Memperbarui daftar siswa global di root state (S.adminGuru.students)
+ * sekaligus menyinkronkan ke seluruh mapel & penyimpanan server.
+ */
+export function setGlobalStudents(
+  updater: StudentItem[] | ((prev: StudentItem[]) => StudentItem[])
+): StudentItem[] {
+  const updated = updateAdminGuruState((prev) => ({
+    ...prev,
+    students: typeof updater === 'function' ? updater(prev.students) : updater,
+  }));
+  return updated.students;
 }
 
 export function createUid(prefix = 'ag'): string {

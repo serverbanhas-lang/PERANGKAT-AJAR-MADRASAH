@@ -1,5 +1,6 @@
 import React, { useEffect } from 'react';
 import { syncMasterStudentsWithServer } from './bridge';
+import { DaftarSiswaView } from './DaftarSiswaView';
 import { DataSiswaView } from './DataSiswaView';
 import { AbsensiView } from './AbsensiView';
 import { JurnalView } from './JurnalView';
@@ -17,6 +18,8 @@ export const AdminGuruRoot: React.FC<AdminGuruRootProps> = ({ view }) => {
   }, [view]);
 
   switch (view) {
+    case 'daftar-siswa':
+      return <DaftarSiswaView />;
     case 'kelas-siswa':
       return <DataSiswaView />;
     case 'absensi':
