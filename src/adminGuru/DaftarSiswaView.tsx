@@ -25,6 +25,7 @@ import {
 import {
   createUid,
   downloadStudentTemplateXlsx,
+  exportStudentsCsv,
   exportStudentsXlsx,
   getAppApi,
   getLegacyState,
@@ -489,6 +490,22 @@ export const DaftarSiswaView: React.FC = () => {
     api?.toast('Daftar siswa berhasil diekspor ke Excel (.xlsx).');
   };
 
+  const handleExportStudentsCsv = () => {
+    if (filteredAndSortedStudents.length === 0) {
+      api?.toast('Belum ada data siswa yang tampil untuk diekspor.');
+      return;
+    }
+    const baseLabel =
+      filterKelasId !== 'all'
+        ? classMap.get(filterKelasId)?.nama || 'Kelas'
+        : filterTingkat !== 'all'
+          ? `Kelas_${filterTingkat}`
+          : 'Master_Semua_Siswa';
+    const label = filterStatus !== 'all' ? `${baseLabel}_${filterStatus}` : baseLabel;
+    exportStudentsCsv(filteredAndSortedStudents, globalClasses, label);
+    api?.toast('Daftar siswa berhasil diekspor sebagai file CSV.');
+  };
+
   return (
     <div className="max-w-[1100px] mx-auto space-y-4">
       {/* Banner Master Daftar Siswa Global */}
@@ -655,6 +672,22 @@ export const DaftarSiswaView: React.FC = () => {
         {/* Bar Statistik & Impor/Ekspor */}
         <div className="mt-4 pt-3 border-t border-[#eaf0e9] flex flex-wrap items-center justify-between gap-2">
           <div className="flex flex-wrap gap-2 items-center text-xs">
+            <label
+              className={`inline-flex items-center gap-2 px-2.5 py-1 rounded-md border font-semibold cursor-pointer select-none transition-colors ${
+                filterStatus === 'aktif'
+                  ? 'bg-[#dcefea] border-[#0c6a5a] text-[#093f36]'
+                  : 'bg-white border-[#d3dcdf] text-[#14222b] hover:bg-[#f3f7f7]'
+              }`}
+            >
+              <input
+                type="checkbox"
+                className="w-3.5 h-3.5 accent-[#0c6a5a] rounded cursor-pointer"
+                checked={filterStatus === 'aktif'}
+                onChange={(e) => setFilterStatus(e.target.checked ? 'aktif' : 'all')}
+                aria-label="Hanya tampilkan siswa berstatus Aktif"
+              />
+              <span>Hanya siswa Aktif ({masterStats.aktif})</span>
+            </label>
             <span className="badge">
               Ditampilkan: {masterStats.totalShown} dari {masterStats.totalAll} siswa
             </span>
@@ -690,6 +723,15 @@ export const DaftarSiswaView: React.FC = () => {
                 />
               </>
             )}
+            <button
+              type="button"
+              className="btn sm"
+              onClick={handleExportStudentsCsv}
+              title="Unduh daftar siswa yang sedang ditampilkan sebagai file CSV (.csv) untuk Excel"
+            >
+              <FileSpreadsheet className="w-4 h-4 text-[#126451]" />
+              Export to Excel
+            </button>
             <button type="button" className="btn sm" onClick={handleExportStudents}>
               <Download className="w-4 h-4 text-[#126451]" />
               Ekspor Excel (.xlsx)

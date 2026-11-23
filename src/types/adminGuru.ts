@@ -338,6 +338,8 @@ export interface AppApiBridge {
   getStudents?: (options?: GlobalStudentQueryOptions) => StudentItem[];
   getClasses?: (tingkat?: TingkatKelas | 'all') => KelasItem[];
   setStudents?: (students: StudentItem[]) => StudentItem[];
+  syncDriveNow?: () => Promise<boolean> | boolean;
+  isDriveConnected?: () => boolean;
 }
 
 declare global {

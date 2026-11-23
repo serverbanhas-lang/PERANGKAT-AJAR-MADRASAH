@@ -375,7 +375,8 @@ let serverSyncTimer: number | null = null;
 
 export function writeGlobalMasterStore(
   payload: Partial<MasterStudentsStorePayload>,
-  syncToServer = true
+  syncToServer = true,
+  skipAppSave = false
 ): MasterStudentsStorePayload {
   const current = readGlobalMasterStore();
   const nextClasses = payload.classes
@@ -419,6 +420,9 @@ export function writeGlobalMasterStore(
         classes: full.classes,
         students: full.students,
       });
+      if (!skipAppSave) {
+        api?.save();
+      }
     }
 
     window.dispatchEvent(new CustomEvent('ma:master-students-updated', { detail: full }));
@@ -639,6 +643,7 @@ export function updateAdminGuruState(
         students: next.students,
         deletedStudentIds: updatedDeleted,
       },
+      true,
       true
     );
   }
@@ -1314,6 +1319,48 @@ export function exportStudentsXlsx(students: StudentItem[], classes: KelasItem[]
   ws['!cols'] = [{ wch: 6 }, { wch: 18 }, { wch: 30 }, { wch: 16 }, { wch: 12 }, { wch: 14 }, { wch: 12 }];
   XLSX.utils.book_append_sheet(wb, ws, 'Data Siswa');
   XLSX.writeFile(wb, `Data_Siswa_${filterLabel.replace(/[^A-Za-z0-9_-]/g, '_')}.xlsx`);
+}
+
+function escapeCsvCell(value: string | number): string {
+  const str = String(value ?? '');
+  if (/[",\r\n]/.test(str)) {
+    return `"${str.replace(/"/g, '""')}"`;
+  }
+  return str;
+}
+
+export function exportStudentsCsv(students: StudentItem[], classes: KelasItem[], filterLabel = 'Semua_Kelas'): void {
+  const classMap = new Map(classes.map((c) => [c.id, c]));
+  const headers = ['No', 'NIS/NISN', 'Nama Lengkap', 'Jenis Kelamin', 'Tingkat', 'Kelas', 'Status'];
+  const lines = [
+    headers.map(escapeCsvCell).join(','),
+    ...students.map((s, idx) => {
+      const cls = classMap.get(s.kelasId);
+      const row = [
+        idx + 1,
+        s.nisn || '',
+        s.nama || '',
+        s.jk || '',
+        cls ? `Kelas ${cls.tingkat}` : '-',
+        cls ? cls.nama : '-',
+        s.status === 'aktif' ? 'Aktif' : 'Nonaktif',
+      ];
+      return row.map(escapeCsvCell).join(',');
+    }),
+  ];
+
+  // Prepend UTF-8 BOM so Microsoft Excel opens UTF-8 characters properly
+  const csvContent = '\uFEFF' + lines.join('\r\n');
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const safeLabel = filterLabel.replace(/[^A-Za-z0-9_-]/g, '_');
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `Data_Siswa_${safeLabel}.csv`;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 export async function parseStudentImportXlsx(
