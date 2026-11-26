@@ -127,6 +127,10 @@ export const KuisInteraktifView: React.FC = () => {
   const [showPromptPreview, setShowPromptPreview] = useState(false);
   const [showCanvasPromptPreview, setShowCanvasPromptPreview] = useState(false);
   const [includeRosterInCanvas, setIncludeRosterInCanvas] = useState(false);
+  const [canvasPinGuru, setCanvasPinGuru] = useState('2026');
+  const [canvasPgKompleks, setCanvasPgKompleks] = useState<number>(5);
+  const [canvasMenjodohkan, setCanvasMenjodohkan] = useState<number>(2);
+  const [canvasBenarSalah, setCanvasBenarSalah] = useState<number>(3);
 
   const [publishing, setPublishing] = useState(false);
   const [fetchingScores, setFetchingScores] = useState(false);
@@ -210,18 +214,26 @@ export const KuisInteraktifView: React.FC = () => {
 
   const geminiCanvasQuizPrompt = useMemo(() => {
     const kelasObj = adminState.classes.find((c) => c.id === selectedKelasId);
+    const sameLevelClasses = kelasObj
+      ? adminState.classes.filter((c) => c.tingkat === kelasObj.tingkat).map((c) => c.nama)
+      : adminState.classes.map((c) => c.nama);
     const tpObj = dynamicTPs.find((t) => t.key === selectedTpKey);
     return buildQuizGeminiCanvasPrompt({
       materiText: customMateriText,
       judul: judulKuis,
       mapel: selectedMapel,
       kelas: kelasObj ? `${kelasObj.nama} (Kelas ${kelasObj.tingkat})` : '',
+      kelasList: sameLevelClasses,
       pertemuanJp: pertemuanJpLabel,
       tp: selectedSource?.tpLabel || tpObj?.fullText || '',
       kbc: selectedSource?.kbcTema || '',
       namaSekolah: legacy?.identitas?.namaSekolah || 'MA Banu Hasyim',
       guru: legacy?.identitas?.guru || '',
+      pinGuru: canvasPinGuru,
       jumlahPG,
+      jumlahPGKompleks: canvasPgKompleks,
+      jumlahMenjodohkan: canvasMenjodohkan,
+      jumlahBenarSalah: canvasBenarSalah,
       jumlahEsai,
       durasiMenit: durasi,
       tingkatKesulitan: kesulitan,
@@ -229,6 +241,10 @@ export const KuisInteraktifView: React.FC = () => {
     });
   }, [
     adminState.classes,
+    canvasBenarSalah,
+    canvasMenjodohkan,
+    canvasPgKompleks,
+    canvasPinGuru,
     classRoster,
     customMateriText,
     durasi,
@@ -1106,15 +1122,14 @@ export const KuisInteraktifView: React.FC = () => {
                   <div className="text-xs text-[#0b3c32] bg-[#e7f5ef] border border-[#8ac5b2] rounded-lg p-3 space-y-1.5">
                     <div className="font-bold flex items-center gap-1.5">
                       <MonitorCheck className="w-4 h-4 text-[#0c6a5a]" />
-                      Buat Aplikasi Kuis CBT Siap Bagikan di Gemini Canvas
+                      Buat Aplikasi Kuis CBT Siap Bagikan di Gemini Canvas (Nuansa Islami)
                     </div>
                     <p className="leading-relaxed text-[#1f5547]">
-                      Prompt otomatis menginstruksikan <b>Gemini Canvas</b> membuat aplikasi web{' '}
-                      <b>Kuis CBT HTML5 lengkap</b> (login peserta, timer hitung mundur, navigasi
-                      nomor soal, ragu-ragu, skor otomatis, pembahasan, serta salin rekap WA) yang{' '}
-                      <b>100% sesuai Mapel, Pertemuan/JP, dan Bahan Ajar Mendalam</b> di samping,
-                      sehingga langsung bisa dibagikan ke siswa via tautan{' '}
-                      <code>share.gemini.google/...</code>.
+                      Prompt otomatis menyusun web <b>CBT 1 file HTML lengkap</b> bernuansa Islami
+                      (hijau zamrud &amp; emas) dengan <b>Dasbor Guru ber-PIN</b>, tombol{' '}
+                      <b>Kunci Jawaban + Afirmasi &amp; Pembahasan</b> per soal, dukungan{' '}
+                      <b>font Arab berharakat (RTL)</b>, <b>Refleksi Pembelajaran</b>, serta soal
+                      HOTS &amp; literasi numerasi sesuai <b>Mapel, Pertemuan/JP, dan Bahan Ajar</b>.
                     </p>
                     <div className="flex flex-wrap gap-1.5 pt-1">
                       <span className="badge">Mapel: {selectedMapel}</span>
@@ -1123,8 +1138,60 @@ export const KuisInteraktifView: React.FC = () => {
                         {adminState.classes.find((c) => c.id === selectedKelasId)?.nama || 'Kelas'}
                       </span>
                       <span className="badge hots">
-                        {jumlahPG} PG{jumlahEsai > 0 ? ` + ${jumlahEsai} Esai` : ''} · {durasi} Menit
+                        Total{' '}
+                        {jumlahPG +
+                          canvasPgKompleks +
+                          canvasMenjodohkan +
+                          canvasBenarSalah +
+                          jumlahEsai}{' '}
+                        Soal · {durasi} Menit
                       </span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 bg-white border border-[#d3dcdf] rounded-lg p-2.5">
+                    <div>
+                      <label className="f !text-[11px]">PG Kompleks (A–E)</label>
+                      <input
+                        type="number"
+                        min={0}
+                        max={20}
+                        className="in !py-1 text-xs"
+                        value={canvasPgKompleks}
+                        onChange={(e) => setCanvasPgKompleks(Math.max(0, Number(e.target.value)))}
+                      />
+                    </div>
+                    <div>
+                      <label className="f !text-[11px]">Menjodohkan</label>
+                      <input
+                        type="number"
+                        min={0}
+                        max={15}
+                        className="in !py-1 text-xs"
+                        value={canvasMenjodohkan}
+                        onChange={(e) => setCanvasMenjodohkan(Math.max(0, Number(e.target.value)))}
+                      />
+                    </div>
+                    <div>
+                      <label className="f !text-[11px]">Benar / Salah</label>
+                      <input
+                        type="number"
+                        min={0}
+                        max={15}
+                        className="in !py-1 text-xs"
+                        value={canvasBenarSalah}
+                        onChange={(e) => setCanvasBenarSalah(Math.max(0, Number(e.target.value)))}
+                      />
+                    </div>
+                    <div>
+                      <label className="f !text-[11px]">PIN Dasbor Guru</label>
+                      <input
+                        type="text"
+                        className="in !py-1 text-xs font-mono"
+                        placeholder="2026"
+                        value={canvasPinGuru}
+                        onChange={(e) => setCanvasPinGuru(e.target.value)}
+                      />
                     </div>
                   </div>
 
