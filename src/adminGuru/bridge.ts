@@ -1839,6 +1839,7 @@ export function buildQuizExternalPrompt(params: {
   judul: string;
   mapel: string;
   kelas: string;
+  pertemuanJp?: string;
   tp: string;
   jumlahPG: number;
   jumlahEsai: number;
@@ -1851,6 +1852,7 @@ IDENTITAS KUIS:
 - Judul Kuis: ${params.judul || 'Kuis Pembelajaran'}
 - Mata Pelajaran: ${params.mapel || '-'}
 - Kelas: ${params.kelas || '-'}
+- Pertemuan & Alokasi JP: ${params.pertemuanJp || '-'}
 - Tujuan Pembelajaran: ${params.tp || '-'}
 - Tingkat Kesulitan: ${params.tingkatKesulitan}
 
@@ -1888,6 +1890,85 @@ Kembalikan HANYA JSON valid (tanpa teks pengantar/penutup atau markdown) dengan 
     }
   ]
 }`;
+}
+
+export function buildQuizGeminiCanvasPrompt(params: {
+  materiText: string;
+  judul: string;
+  mapel: string;
+  kelas: string;
+  pertemuanJp: string;
+  tp: string;
+  kbc?: string;
+  namaSekolah?: string;
+  guru?: string;
+  jumlahPG: number;
+  jumlahEsai: number;
+  durasiMenit: number;
+  tingkatKesulitan: string;
+  studentNames?: Array<{ nisn: string; nama: string }>;
+}): string {
+  const totalSoal = Math.max(1, Number(params.jumlahPG || 0) + Number(params.jumlahEsai || 0));
+  const hasRoster = Array.isArray(params.studentNames) && params.studentNames.length > 0;
+  const rosterSection = hasRoster
+    ? `\nDAFTAR PESERTA KELAS (SEDIAKAN DROPDOWN PILIH NAMA ATAU INPUT MANUAL DI HALAMAN LOGIN CBT):\n${params.studentNames!
+        .slice(0, 60)
+        .map((s, i) => `${i + 1}. ${s.nama}${s.nisn ? ` (NISN: ${s.nisn})` : ''}`)
+        .join('\n')}\n`
+    : '';
+
+  return `Buatkan langsung di **Gemini Canvas** sebuah aplikasi web interaktif **Kuis CBT (Computer-Based Test)** dalam 1 file HTML5 lengkap (HTML + Tailwind CSS CDN + JavaScript) yang siap langsung dijalankan di pratinjau Canvas dan dibagikan ke siswa melalui tautan Share Gemini Canvas.
+
+IDENTITAS MADRASAH & PEMBELAJARAN:
+- Satuan Pendidikan: ${params.namaSekolah || 'Madrasah Aliyah'}
+- Guru Pengampu: ${params.guru || '-'}
+- Mata Pelajaran: ${params.mapel || '-'}
+- Kelas Sasaran: ${params.kelas || '-'}
+- Pertemuan & Alokasi JP: ${params.pertemuanJp || '-'}
+- Judul Kuis CBT: ${params.judul || 'Kuis CBT Pembelajaran'}
+- Tujuan Pembelajaran (TP): ${params.tp || '-'}
+- Integrasi Kurikulum Berbasis Cinta (KBC): ${params.kbc || '-'}
+- Komposisi Soal: ${params.jumlahPG} Soal Pilihan Ganda (A-E) dan ${params.jumlahEsai} Soal Esai/Uraian (Total ${totalSoal} soal)
+- Tingkat Kesulitan: ${params.tingkatKesulitan}
+- Durasi Pengerjaan: ${params.durasiMenit} menit
+${rosterSection}
+BAHAN AJAR MENDALAM (WAJIB MENJADI SUMBER UTAMA SELURUH SOAL):
+${String(params.materiText || '').slice(0, 16000)}
+
+SPESIFIKASI WAJIB APLIKASI CBT DI GEMINI CANVAS:
+1. **Keselarasan Materi 100%**:
+   - Seluruh ${totalSoal} butir soal WAJIB disusun berdasarkan **Bahan Ajar Mendalam** di atas, selaras dengan **Mata Pelajaran (${params.mapel || '-'})** dan cakupan **${params.pertemuanJp || 'pertemuan ini'}**.
+   - Tuliskan seluruh ${params.jumlahPG} soal PG (masing-masing 4 atau 5 pilihan jawaban yang logis, kunci jawaban, dan pembahasan) serta ${params.jumlahEsai} soal Esai (lengkap dengan rubrik/kunci jawaban ideal) secara penuh di dalam array JavaScript \`QUIZ_DATA\`. DILARANG menggunakan placeholder atau komentar penyingkat seperti \`// tambah soal lainnya\`.
+
+2. **Tampilan & Alur CBT Profesional (Responsif untuk HP & Laptop)**:
+   - **Tema Visual**: Desain akademik Madrasah Aliyah modern bernuansa hijau zamrud (#0c6a5a / #093f36) dan emas (#c68a0f), bersih, kontras tinggi, nyaman dibaca siswa di layar ponsel maupun komputer.
+   - **Halaman 1 — Login / Identitas Peserta CBT**:
+     - Tampilkan banner identitas: Nama Madrasah, Judul Kuis, Mapel, Kelas, Pertemuan & JP, Jumlah Soal, dan Durasi (${params.durasiMenit} menit).
+     - ${
+       hasRoster
+         ? 'Sediakan pilihan dropdown Nama Siswa dari daftar kelas di atas (atau opsi ketik nama manual) serta input/otomatis NISN/Nomor Absen.'
+         : 'Sediakan input Nama Lengkap Siswa, NISN / Nomor Absen, dan Kelas.'
+     }
+     - Tombol **"Mulai Mengerjakan CBT"**.
+   - **Halaman 2 — Ruang Ujian CBT Interaktif**:
+     - Header tetap menampilkan: Judul Kuis, Mapel, Pertemuan/JP, Nama Peserta, dan **Timer Hitung Mundur (${params.durasiMenit}:00)** yang otomatis mengumpulkan ujian saat waktu habis.
+     - **Panel Navigasi Nomor Soal** (grid angka 1 s.d. ${totalSoal}) dengan indikator warna jelas:
+       * Hijau = Sudah dijawab
+       * Kuning/Amber = Ditandai Ragu-ragu
+       * Abu-abu = Belum dijawab
+     - Tampilan 1 soal per layar (atau navigasi klik nomor) dengan tombol **Sebelumnya**, **Tandai Ragu-ragu**, **Berikutnya**, dan tombol **Selesai & Kumpulkan** (disertai modal konfirmasi yang menunjukkan jumlah soal terjawab dan belum terjawab).
+   - **Halaman 3 — Hasil Ujian, Pembahasan & Kirim Bukti ke Guru**:
+     - Hitung otomatis **Skor Pilihan Ganda (skala 0–100)**, jumlah Benar, Salah, dan status ketercapaian.
+     - Tampilkan **Pembahasan Lengkap** untuk setiap soal (membandingkan jawaban siswa vs kunci jawaban benar + penjelasan).
+     - ${
+       params.jumlahEsai > 0
+         ? 'Untuk soal Esai, tampilkan jawaban siswa berdampingan dengan Rubrik & Kunci Jawaban Ideal sebagai refleksi mandiri.'
+         : ''
+     }
+     - Sediakan tombol **"Salin Rekap Hasil (WhatsApp)"** untuk menyalin ringkasan rapi (Nama Siswa, NISN, Kelas, Mapel, Pertemuan & JP, Judul Kuis, Skor, dan Waktu Selesai) agar bisa langsung dikirim ke guru, serta tombol **"Cetak / Simpan Bukti PDF"** (\`window.print()\`).
+
+INSTRUKSI EKSEKUSI CANVAS:
+Buat kode HTML5 lengkap dalam satu file langsung di **Gemini Canvas** agar aplikasi CBT dapat langsung dicoba di pratinjau dan dibagikan ke siswa.`;
 }
 
 export function buildMediaExternalPrompt(params: {

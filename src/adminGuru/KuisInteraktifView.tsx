@@ -6,10 +6,12 @@ import {
   ClipboardPaste,
   Copy,
   Download,
+  ExternalLink,
   Eye,
   FileText,
   Globe,
   Lock,
+  MonitorCheck,
   Plus,
   RefreshCw,
   Share2,
@@ -20,6 +22,7 @@ import {
 } from 'lucide-react';
 import {
   buildQuizExternalPrompt,
+  buildQuizGeminiCanvasPrompt,
   copyTextToClipboard,
   createEmptyGradeRow,
   createUid,
@@ -36,8 +39,14 @@ import {
   subscribeMasterStudents,
   updateAdminGuruState,
 } from './bridge';
+import type { BahanAjarSource } from './bridge';
 import { StudentQuizView } from './StudentQuizView';
 import type { QuizItem, QuizQuestion, QuizSubmission } from '../types/adminGuru';
+
+function formatPertemuanJpLabel(src?: BahanAjarSource): string {
+  if (!src) return 'Pertemuan 1 (2 JP)';
+  return `Pertemuan ${src.meetingNumber} (Semester ${src.smt} · ${src.jp} JP)`;
+}
 
 const SAMPLE_QUIZ_JSON = `{
   "judul": "Kuis Pemahaman Materi",
@@ -101,18 +110,23 @@ export const KuisInteraktifView: React.FC = () => {
     mapelList[0] || 'Mata Pelajaran Utama'
   );
   const [selectedTpKey, setSelectedTpKey] = useState<string>(dynamicTPs[0]?.key || 'tp1');
+  const [pertemuanJpLabel, setPertemuanJpLabel] = useState<string>(() =>
+    formatPertemuanJpLabel(bahanSources[0])
+  );
   const [jumlahPG, setJumlahPG] = useState<number>(5);
   const [jumlahEsai, setJumlahEsai] = useState<number>(2);
   const [kesulitan, setKesulitan] = useState<string>('Campuran (LOTS & HOTS)');
   const [durasi, setDurasi] = useState<number>(25);
 
-  // Mode Input: AI Langsung vs Salin Prompt & Tempel JSON
-  const [creatorMode, setCreatorMode] = useState<'ai' | 'prompt-json'>('ai');
+  // Mode Input: AI Langsung vs Salin Prompt & Tempel JSON vs Salin Prompt CBT Gemini Canvas
+  const [creatorMode, setCreatorMode] = useState<'ai' | 'prompt-json' | 'gemini-canvas'>('ai');
   const [generating, setGenerating] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
   const [pastedJson, setPastedJson] = useState('');
   const [jsonError, setJsonError] = useState<string | null>(null);
   const [showPromptPreview, setShowPromptPreview] = useState(false);
+  const [showCanvasPromptPreview, setShowCanvasPromptPreview] = useState(false);
+  const [includeRosterInCanvas, setIncludeRosterInCanvas] = useState(false);
 
   const [publishing, setPublishing] = useState(false);
   const [fetchingScores, setFetchingScores] = useState(false);
@@ -130,24 +144,35 @@ export const KuisInteraktifView: React.FC = () => {
     [adminState.quizzes, selectedQuizId]
   );
 
+  const classRoster = useMemo(
+    () => getStudentsByKelas(selectedKelasId).map((s) => ({ nisn: s.nisn, nama: s.nama })),
+    [selectedKelasId, adminState.students]
+  );
+
   const handleSelectBahanSource = (unitId: string) => {
     setSelectedUnitId(unitId);
     const found = bahanSources.find((b) => b.unitId === unitId);
     if (found) {
       setCustomMateriText(found.plainText);
       setJudulKuis(`Kuis: ${found.judul}`);
+      setPertemuanJpLabel(formatPertemuanJpLabel(found));
     }
   };
 
   const handleRefreshDatabase = () => {
     setDbTick((t) => t + 1);
     const latest = getLegacyState();
+    const latestMapel = getActiveMapelList(latest);
+    if (latestMapel.length > 0 && !latestMapel.includes(selectedMapel)) {
+      setSelectedMapel(latestMapel[0]);
+    }
     const latestSources = getBahanAjarSources(latest);
     const target = latestSources.find((b) => b.unitId === selectedUnitId) || latestSources[0];
     if (target) {
       setSelectedUnitId(target.unitId);
       setCustomMateriText(target.plainText);
       setJudulKuis(`Kuis: ${target.judul}`);
+      setPertemuanJpLabel(formatPertemuanJpLabel(target));
       api?.toast(`Materi "${target.judul}" berhasil ditarik ulang dari database.`);
     } else {
       api?.toast('Belum ada data materi pada menu ATP & Bahan Ajar Mendalam.');
@@ -162,7 +187,8 @@ export const KuisInteraktifView: React.FC = () => {
       judul: judulKuis,
       mapel: selectedMapel,
       kelas: kelasObj ? `${kelasObj.nama} (Kelas ${kelasObj.tingkat})` : '',
-      tp: tpObj?.fullText || '',
+      pertemuanJp: pertemuanJpLabel,
+      tp: selectedSource?.tpLabel || tpObj?.fullText || '',
       jumlahPG,
       jumlahEsai,
       tingkatKesulitan: kesulitan,
@@ -175,8 +201,49 @@ export const KuisInteraktifView: React.FC = () => {
     jumlahPG,
     judulKuis,
     kesulitan,
+    pertemuanJpLabel,
     selectedKelasId,
     selectedMapel,
+    selectedSource,
+    selectedTpKey,
+  ]);
+
+  const geminiCanvasQuizPrompt = useMemo(() => {
+    const kelasObj = adminState.classes.find((c) => c.id === selectedKelasId);
+    const tpObj = dynamicTPs.find((t) => t.key === selectedTpKey);
+    return buildQuizGeminiCanvasPrompt({
+      materiText: customMateriText,
+      judul: judulKuis,
+      mapel: selectedMapel,
+      kelas: kelasObj ? `${kelasObj.nama} (Kelas ${kelasObj.tingkat})` : '',
+      pertemuanJp: pertemuanJpLabel,
+      tp: selectedSource?.tpLabel || tpObj?.fullText || '',
+      kbc: selectedSource?.kbcTema || '',
+      namaSekolah: legacy?.identitas?.namaSekolah || 'MA Banu Hasyim',
+      guru: legacy?.identitas?.guru || '',
+      jumlahPG,
+      jumlahEsai,
+      durasiMenit: durasi,
+      tingkatKesulitan: kesulitan,
+      studentNames: includeRosterInCanvas ? classRoster : undefined,
+    });
+  }, [
+    adminState.classes,
+    classRoster,
+    customMateriText,
+    durasi,
+    dynamicTPs,
+    includeRosterInCanvas,
+    jumlahEsai,
+    jumlahPG,
+    judulKuis,
+    kesulitan,
+    legacy?.identitas?.guru,
+    legacy?.identitas?.namaSekolah,
+    pertemuanJpLabel,
+    selectedKelasId,
+    selectedMapel,
+    selectedSource,
     selectedTpKey,
   ]);
 
@@ -279,6 +346,36 @@ export const KuisInteraktifView: React.FC = () => {
     const a = document.createElement('a');
     a.href = url;
     a.download = `Prompt_Kuis_${(judulKuis || 'Soal').replace(/[^A-Za-z0-9_-]/g, '_')}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => {
+      URL.revokeObjectURL(url);
+      a.remove();
+    }, 300);
+  };
+
+  const handleCopyCanvasPrompt = async () => {
+    if (!customMateriText.trim()) {
+      api?.toast('Pilih Bahan Ajar Mendalam atau isi teks materi terlebih dahulu.');
+      return;
+    }
+    const ok = await copyTextToClipboard(geminiCanvasQuizPrompt);
+    if (ok) {
+      api?.toast(
+        'Prompt CBT Gemini Canvas tersalin! Buka Gemini → aktifkan Canvas → tempel & kirim, lalu Bagikan tautannya.'
+      );
+    } else {
+      setShowCanvasPromptPreview(true);
+      api?.toast('Salin prompt CBT dari kotak pratinjau di bawah.');
+    }
+  };
+
+  const handleDownloadCanvasPromptTxt = () => {
+    const blob = new Blob([geminiCanvasQuizPrompt], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `Prompt_CBT_Gemini_Canvas_${(judulKuis || 'Kuis').replace(/[^A-Za-z0-9_-]/g, '_')}.txt`;
     document.body.appendChild(a);
     a.click();
     setTimeout(() => {
@@ -665,9 +762,14 @@ export const KuisInteraktifView: React.FC = () => {
       <div className="panel noprint !max-w-none">
         <div className="flex flex-wrap items-start justify-between gap-3 border-b border-[#e9e4d4] pb-3 mb-4">
           <div>
-            <h2 className="!border-0 !pb-0 !mb-1">Kuis Interaktif (AI &amp; Salin Prompt / JSON)</h2>
+            <h2 className="!border-0 !pb-0 !mb-1">
+              Kuis Interaktif (AI, Salin JSON &amp; CBT Gemini Canvas)
+            </h2>
             <p className="hint !mb-0">
-              Tarik materi langsung dari <b>Bahan Ajar Mendalam / Konten Materi</b>, buat soal PG &amp; Esai lewat <b>Generate AI</b> atau <b>Salin Prompt (Gemini / ChatGPT) &amp; Tempel JSON</b>, bagikan <b>Link / Kode Akses Siswa</b>, dan sinkronkan skor ke <b>Nilai Formatif</b>.
+              Tarik materi langsung dari <b>Bahan Ajar Mendalam / Pertemuan JP</b>, lalu pilih{' '}
+              <b>Cara 1 (Generate AI)</b>, <b>Cara 2 (Salin Prompt JSON)</b>, atau{' '}
+              <b>Cara 3 (Salin Prompt CBT Gemini Canvas)</b> agar kuis CBT langsung jadi &amp; siap
+              dibagikan ke siswa.
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -703,7 +805,7 @@ export const KuisInteraktifView: React.FC = () => {
                 )}
                 {bahanSources.map((b) => (
                   <option key={b.unitId} value={b.unitId}>
-                    Pertemuan {b.meetingNumber} (Smt {b.smt}): {b.judul}{' '}
+                    Pertemuan {b.meetingNumber} (Smt {b.smt} · {b.jp} JP): {b.judul}{' '}
                     {b.hasDeepBahanAjar ? '✓ Materi Mendalam' : b.hasDeepContent ? '(Konten)' : '(Ringkas)'}
                   </option>
                 ))}
@@ -761,6 +863,15 @@ export const KuisInteraktifView: React.FC = () => {
                 </select>
               </div>
               <div>
+                <label className="f">Pertemuan &amp; Alokasi JP yang Diajarkan</label>
+                <input
+                  className="in"
+                  placeholder="Contoh: Pertemuan 2 (Semester 1 · 2 JP)"
+                  value={pertemuanJpLabel}
+                  onChange={(e) => setPertemuanJpLabel(e.target.value)}
+                />
+              </div>
+              <div className="sm:col-span-2">
                 <label className="f">Sinkron ke Kolom Nilai Formatif</label>
                 <select
                   className="in"
@@ -842,6 +953,14 @@ export const KuisInteraktifView: React.FC = () => {
                   <ClipboardPaste className="w-3.5 h-3.5" />
                   Cara 2: Salin Prompt (Gemini / ChatGPT) &amp; Tempel JSON
                 </button>
+                <button
+                  type="button"
+                  onClick={() => setCreatorMode('gemini-canvas')}
+                  className={`btn sm ${creatorMode === 'gemini-canvas' ? 'primary' : ''}`}
+                >
+                  <MonitorCheck className="w-3.5 h-3.5" />
+                  Cara 3: Salin Prompt CBT (Gemini Canvas)
+                </button>
               </div>
 
               {creatorMode === 'ai' ? (
@@ -867,18 +986,28 @@ export const KuisInteraktifView: React.FC = () => {
                         <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
                         <span>{aiError}</span>
                       </div>
-                      <button
-                        type="button"
-                        className="btn sm"
-                        onClick={() => setCreatorMode('prompt-json')}
-                      >
-                        <ClipboardPaste className="w-3.5 h-3.5" />
-                        Beralih ke Salin Prompt (Gemini / ChatGPT) &amp; Tempel JSON
-                      </button>
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          className="btn sm"
+                          onClick={() => setCreatorMode('prompt-json')}
+                        >
+                          <ClipboardPaste className="w-3.5 h-3.5" />
+                          Beralih ke Cara 2 (Prompt JSON)
+                        </button>
+                        <button
+                          type="button"
+                          className="btn sm"
+                          onClick={() => setCreatorMode('gemini-canvas')}
+                        >
+                          <MonitorCheck className="w-3.5 h-3.5" />
+                          Beralih ke Cara 3 (CBT Gemini Canvas)
+                        </button>
+                      </div>
                     </div>
                   )}
                 </div>
-              ) : (
+              ) : creatorMode === 'prompt-json' ? (
                 <div className="space-y-3">
                   <div className="text-xs text-[#315449] bg-[#eaf5f3] border border-[#bcd6d2] rounded-lg p-2.5">
                     <b>Langkah mudah pakai Gemini Web atau ChatGPT:</b> (1) Klik{' '}
@@ -970,6 +1099,95 @@ export const KuisInteraktifView: React.FC = () => {
                         onChange={handleUploadQuizJsonFile}
                       />
                     </label>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div className="text-xs text-[#0b3c32] bg-[#e7f5ef] border border-[#8ac5b2] rounded-lg p-3 space-y-1.5">
+                    <div className="font-bold flex items-center gap-1.5">
+                      <MonitorCheck className="w-4 h-4 text-[#0c6a5a]" />
+                      Buat Aplikasi Kuis CBT Siap Bagikan di Gemini Canvas
+                    </div>
+                    <p className="leading-relaxed text-[#1f5547]">
+                      Prompt otomatis menginstruksikan <b>Gemini Canvas</b> membuat aplikasi web{' '}
+                      <b>Kuis CBT HTML5 lengkap</b> (login peserta, timer hitung mundur, navigasi
+                      nomor soal, ragu-ragu, skor otomatis, pembahasan, serta salin rekap WA) yang{' '}
+                      <b>100% sesuai Mapel, Pertemuan/JP, dan Bahan Ajar Mendalam</b> di samping,
+                      sehingga langsung bisa dibagikan ke siswa via tautan{' '}
+                      <code>share.gemini.google/...</code>.
+                    </p>
+                    <div className="flex flex-wrap gap-1.5 pt-1">
+                      <span className="badge">Mapel: {selectedMapel}</span>
+                      <span className="badge">{pertemuanJpLabel}</span>
+                      <span className="badge">
+                        {adminState.classes.find((c) => c.id === selectedKelasId)?.nama || 'Kelas'}
+                      </span>
+                      <span className="badge hots">
+                        {jumlahPG} PG{jumlahEsai > 0 ? ` + ${jumlahEsai} Esai` : ''} · {durasi} Menit
+                      </span>
+                    </div>
+                  </div>
+
+                  <label className="inline-flex items-center gap-2 text-xs text-[#14222b] cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      className="w-3.5 h-3.5 accent-[#0c6a5a] rounded cursor-pointer"
+                      checked={includeRosterInCanvas}
+                      onChange={(e) => setIncludeRosterInCanvas(e.target.checked)}
+                    />
+                    <span>
+                      Sertakan daftar nama siswa kelas ini ({classRoster.length} siswa) untuk dropdown
+                      login di CBT Canvas
+                    </span>
+                  </label>
+
+                  <div className="flex flex-wrap gap-2">
+                    <button type="button" className="btn primary sm" onClick={handleCopyCanvasPrompt}>
+                      <Copy className="w-3.5 h-3.5" /> Salin Prompt CBT (Gemini Canvas)
+                    </button>
+                    <a
+                      href="https://gemini.google.com/app"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={handleCopyCanvasPrompt}
+                      className="btn sm !no-underline"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5 text-[#0c6a5a]" /> Salin Prompt &amp; Buka
+                      Gemini
+                    </a>
+                    <button
+                      type="button"
+                      className="btn sm"
+                      onClick={handleDownloadCanvasPromptTxt}
+                    >
+                      <Download className="w-3.5 h-3.5" /> Unduh Prompt (.txt)
+                    </button>
+                    <button
+                      type="button"
+                      className="btn sm"
+                      onClick={() => setShowCanvasPromptPreview((v) => !v)}
+                    >
+                      <FileText className="w-3.5 h-3.5" />{' '}
+                      {showCanvasPromptPreview ? 'Tutup Pratinjau Prompt' : 'Lihat Prompt'}
+                    </button>
+                  </div>
+
+                  {showCanvasPromptPreview && (
+                    <textarea
+                      readOnly
+                      rows={8}
+                      className="in text-[11px] font-mono bg-white"
+                      value={geminiCanvasQuizPrompt}
+                    />
+                  )}
+
+                  <div className="text-[11.5px] text-[#315449] bg-white border border-[#d3dcdf] rounded-lg p-2.5 leading-relaxed">
+                    <b>Cara pakai cepat:</b> (1) Pastikan <b>Mapel</b>, <b>Pertemuan &amp; JP</b>,
+                    dan <b>Teks Bahan Ajar</b> sudah sesuai. (2) Klik{' '}
+                    <b>Salin Prompt &amp; Buka Gemini</b>, aktifkan tombol <b>Canvas</b> di kotak
+                    pesan Gemini lalu tempel (<code>Ctrl+V</code>) dan kirim. (3) Setelah CBT
+                    tampil di Gemini Canvas, klik <b>Bagikan (Share)</b> di pojok kanan atas untuk
+                    membagikan link CBT ke siswa.
                   </div>
                 </div>
               )}
